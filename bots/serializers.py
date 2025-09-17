@@ -15,6 +15,7 @@ from drf_spectacular.utils import (
     extend_schema_serializer,
 )
 from rest_framework import serializers
+from django.conf import settings
 
 from .automatic_leave_configuration import AutomaticLeaveConfiguration
 from .models import (
@@ -1154,7 +1155,8 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
         if "audio" in value and value.get("audio"):
             audio_url = value.get("audio", {}).get("url")
             if audio_url:
-                if not audio_url.lower().startswith("wss://"):
+                allow_insecure_ws = settings.DEBUG or os.getenv("ALLOW_INSECURE_WEBSOCKET_AUDIO", "false").lower() == "true"
+                if not (audio_url.lower().startswith("wss://") or (allow_insecure_ws and audio_url.lower().startswith("ws://"))):
                     raise serializers.ValidationError({"audio": {"url": "URL must start with wss://"}})
 
         return value
