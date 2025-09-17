@@ -56,7 +56,7 @@ fi
 # Start our own server unless PULSE_SERVER is preset (shared server case)
 if [[ -z "${PULSE_SERVER:-}" ]]; then
   rm -f "${PULSE_RUNTIME_PATH}/pid" 2>/dev/null || true
-  echo "Starting PulseAudio (per-user)…"
+  echo "Starting PulseAudio (per-user)â€¦"
   pulseaudio --daemonize=yes \
              --exit-idle-time="${PA_IDLE_TIME:--1}" \
              --realtime=no --high-priority=no \
