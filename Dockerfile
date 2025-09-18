@@ -103,6 +103,8 @@ WORKDIR $cwd
 
 # Copy only what you need; set ownership/perm at copy time
 COPY --chown=app:app --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
+# Ensure LF endings for shell scripts to avoid '/usr/bin/env: bash\r' on Linux
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh
 COPY --chown=app:app . .
 
 # Make STATIC_ROOT writeable for the non-root user so collectstatic can run at startup
