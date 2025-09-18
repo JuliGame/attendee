@@ -109,7 +109,7 @@ class WebBotAdapter(BotAdapter):
     def pause_recording(self):
         self.recording_paused = True
 
-    def resume_recording(self):
+    def start_or_resume_recording(self):
         self.recording_paused = False
 
     def process_encoded_mp4_chunk(self, message):
@@ -322,6 +322,8 @@ class WebBotAdapter(BotAdapter):
                         elif json_data.get("type") == "RecordingPermissionChange":
                             if json_data.get("change") == "granted":
                                 self.after_bot_can_record_meeting()
+                            elif json_data.get("change") == "denied":
+                                self.after_bot_recording_permission_denied()
 
                 elif message_type == 2:  # VIDEO
                     self.process_video_frame(message)
@@ -609,6 +611,9 @@ class WebBotAdapter(BotAdapter):
         self.send_message_callback({"message": self.Messages.BOT_JOINED_MEETING})
         self.joined_at = time.time()
         self.update_only_one_participant_in_meeting_at()
+
+    def after_bot_recording_permission_denied(self):
+        self.send_message_callback({"message": self.Messages.BOT_RECORDING_PERMISSION_DENIED, "denied_reason": BotAdapter.BOT_RECORDING_PERMISSION_DENIED_REASON.HOST_DENIED_PERMISSION})
 
     def after_bot_can_record_meeting(self):
         if self.recording_permission_granted_at is not None:

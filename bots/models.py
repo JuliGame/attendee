@@ -229,6 +229,7 @@ class BotStates(models.IntegerChoices):
     JOINED_RECORDING_PAUSED = 13, "Joined - Recording Paused"
     JOINING_BREAKOUT_ROOM = 14, "Joining Breakout Room"
     LEAVING_BREAKOUT_ROOM = 15, "Leaving Breakout Room"
+    JOINED_RECORDING_PERMISSION_DENIED = 16, "Joined - Recording Permission Denied"
 
     @classmethod
     def _get_state_to_api_code_mapping(cls):
@@ -249,6 +250,7 @@ class BotStates(models.IntegerChoices):
             cls.JOINED_RECORDING_PAUSED: "joined_recording_paused",
             cls.JOINING_BREAKOUT_ROOM: "joining_breakout_room",
             cls.LEAVING_BREAKOUT_ROOM: "leaving_breakout_room",
+            cls.JOINED_RECORDING_PERMISSION_DENIED: "joined_recording_permission_denied",
         }
 
     @classmethod
@@ -595,7 +597,7 @@ class Bot(models.Model):
 
         # Temporarily enabling this for all google meet meetings
         bot_meeting_type = meeting_type_from_url(self.meeting_url)
-        if (bot_meeting_type == MeetingTypes.GOOGLE_MEET or bot_meeting_type == MeetingTypes.TEAMS or (bot_meeting_type == MeetingTypes.ZOOM and self.use_zoom_web_adapter)) and self.recording_type() == RecordingTypes.AUDIO_AND_VIDEO:
+        if (bot_meeting_type == MeetingTypes.GOOGLE_MEET or bot_meeting_type == MeetingTypes.TEAMS or (bot_meeting_type == MeetingTypes.ZOOM and self.use_zoom_web_adapter())) and self.recording_type() == RecordingTypes.AUDIO_AND_VIDEO:
             return True
 
         debug_settings = self.settings.get("debug_settings", {})
@@ -757,6 +759,7 @@ class BotEventTypes(models.IntegerChoices):
     BOT_LEFT_BREAKOUT_ROOM = 16, "Bot left breakout room"
     BOT_BEGAN_JOINING_BREAKOUT_ROOM = 17, "Bot began joining breakout room"
     BOT_BEGAN_LEAVING_BREAKOUT_ROOM = 18, "Bot began leaving breakout room"
+    BOT_RECORDING_PERMISSION_DENIED = 19, "Bot recording permission denied"
 
     @classmethod
     def type_to_api_code(cls, value):
@@ -780,6 +783,7 @@ class BotEventTypes(models.IntegerChoices):
             cls.BOT_LEFT_BREAKOUT_ROOM: "left_breakout_room",
             cls.BOT_BEGAN_JOINING_BREAKOUT_ROOM: "began_joining_breakout_room",
             cls.BOT_BEGAN_LEAVING_BREAKOUT_ROOM: "began_leaving_breakout_room",
+            cls.BOT_RECORDING_PERMISSION_DENIED: "recording_permission_denied",
         }
         return mapping.get(value)
 
@@ -842,6 +846,8 @@ class BotEventSubTypes(models.IntegerChoices):
     FATAL_ERROR_OUT_OF_CREDITS = 20, "Fatal error - Out of credits"
     COULD_NOT_JOIN_UNABLE_TO_CONNECT_TO_MEETING = 21, "Bot could not join meeting - Unable to connect to meeting. This usually means the meeting password in the URL is incorrect."
     FATAL_ERROR_ATTENDEE_INTERNAL_ERROR = 22, "Fatal error - Attendee internal error"
+    BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION = 23, "Bot recording permission denied - Host denied permission"
+    BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT = 24, "Bot recording permission denied - Request timed out"
 
     @classmethod
     def sub_type_to_api_code(cls, value):
@@ -869,6 +875,8 @@ class BotEventSubTypes(models.IntegerChoices):
             cls.FATAL_ERROR_OUT_OF_CREDITS: "out_of_credits",
             cls.COULD_NOT_JOIN_UNABLE_TO_CONNECT_TO_MEETING: "unable_to_connect_to_meeting",
             cls.FATAL_ERROR_ATTENDEE_INTERNAL_ERROR: "attendee_internal_error",
+            cls.BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION: "host_denied_permission",
+            cls.BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT: "request_timed_out",
         }
         return mapping.get(value)
 
@@ -917,6 +925,9 @@ class BotEvent(models.Model):
                     # For LEAVE_REQUESTED event type, must have one of the valid event subtypes or be null (for backwards compatibility, this will eventually be removed)
                     (Q(event_type=BotEventTypes.LEAVE_REQUESTED) & (Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_USER_REQUESTED) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_SILENCE) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_MAX_UPTIME_EXCEEDED) | Q(event_sub_type__isnull=True)))
                     |
+                    # For BOT_RECORDING_PERMISSION_DENIED event type, must have one of the valid event subtypes
+                    (Q(event_type=BotEventTypes.BOT_RECORDING_PERMISSION_DENIED) & (Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION) | Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT)))
+                    |
                     # For all other events, event_sub_type must be null
                     (~Q(event_type=BotEventTypes.FATAL_ERROR) & ~Q(event_type=BotEventTypes.COULD_NOT_JOIN) & ~Q(event_type=BotEventTypes.LEAVE_REQUESTED) & Q(event_sub_type__isnull=True))
                 ),
@@ -928,14 +939,15 @@ class BotEvent(models.Model):
 class BotEventTransitionFunctions:
     @classmethod
     def get_to_state_for_bot_breakout_room_event(cls, bot: Bot):
-        recording_in_progress = RecordingManager.get_recording_in_progress(bot)
-        if recording_in_progress is None:
-            return BotStates.JOINED_NOT_RECORDING
-        if recording_in_progress.state == RecordingStates.IN_PROGRESS:
-            return BotStates.JOINED_RECORDING
-        if recording_in_progress.state == RecordingStates.PAUSED:
-            return BotStates.JOINED_RECORDING_PAUSED
-        raise Exception(f"In get_to_state_for_bot_breakout_room_event unexpected recording state for recording in progress: {recording_in_progress.state}")
+        # Get the last event from the bot
+        last_bot_event = bot.last_bot_event()
+        if last_bot_event.event_type not in [BotEventTypes.BOT_BEGAN_JOINING_BREAKOUT_ROOM, BotEventTypes.BOT_BEGAN_LEAVING_BREAKOUT_ROOM]:
+            raise Exception(f"In get_to_state_for_bot_breakout_room_event unexpected event type for last bot event: {last_bot_event.event_type}")
+
+        last_bot_event_from_state = last_bot_event.old_state
+        if last_bot_event_from_state not in [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED]:
+            raise Exception(f"In get_to_state_for_bot_breakout_room_event unexpected from_state for last bot event: {last_bot_event_from_state}")
+        return last_bot_event_from_state
 
 
 class BotEventManager:
@@ -959,6 +971,7 @@ class BotEventManager:
                 BotStates.JOINED_RECORDING_PAUSED,
                 BotStates.JOINED_RECORDING,
                 BotStates.JOINED_NOT_RECORDING,
+                BotStates.JOINED_RECORDING_PERMISSION_DENIED,
                 BotStates.WAITING_ROOM,
                 BotStates.LEAVING,
                 BotStates.POST_PROCESSING,
@@ -978,7 +991,7 @@ class BotEventManager:
             "to": BotStates.JOINED_NOT_RECORDING,
         },
         BotEventTypes.BOT_RECORDING_PERMISSION_GRANTED: {
-            "from": BotStates.JOINED_NOT_RECORDING,
+            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED],
             "to": BotStates.JOINED_RECORDING,
         },
         BotEventTypes.MEETING_ENDED: {
@@ -986,6 +999,7 @@ class BotEventManager:
                 BotStates.JOINED_RECORDING_PAUSED,
                 BotStates.JOINED_RECORDING,
                 BotStates.JOINED_NOT_RECORDING,
+                BotStates.JOINED_RECORDING_PERMISSION_DENIED,
                 BotStates.WAITING_ROOM,
                 BotStates.JOINING,
                 BotStates.LEAVING,
@@ -999,6 +1013,7 @@ class BotEventManager:
                 BotStates.JOINED_RECORDING_PAUSED,
                 BotStates.JOINED_RECORDING,
                 BotStates.JOINED_NOT_RECORDING,
+                BotStates.JOINED_RECORDING_PERMISSION_DENIED,
                 BotStates.WAITING_ROOM,
                 BotStates.JOINING,
                 BotStates.JOINING_BREAKOUT_ROOM,
@@ -1039,12 +1054,16 @@ class BotEventManager:
             "to": BotEventTransitionFunctions.get_to_state_for_bot_breakout_room_event,
         },
         BotEventTypes.BOT_BEGAN_JOINING_BREAKOUT_ROOM: {
-            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED],
+            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED],
             "to": BotStates.JOINING_BREAKOUT_ROOM,
         },
         BotEventTypes.BOT_BEGAN_LEAVING_BREAKOUT_ROOM: {
-            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED],
+            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED],
             "to": BotStates.LEAVING_BREAKOUT_ROOM,
+        },
+        BotEventTypes.BOT_RECORDING_PERMISSION_DENIED: {
+            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED],
+            "to": BotStates.JOINED_RECORDING_PERMISSION_DENIED,
         },
     }
 
@@ -1078,11 +1097,11 @@ class BotEventManager:
 
     @classmethod
     def is_state_that_can_play_media(cls, state: int):
-        return state == BotStates.JOINED_RECORDING or state == BotStates.JOINED_NOT_RECORDING or state == BotStates.JOINED_RECORDING_PAUSED
+        return state == BotStates.JOINED_RECORDING or state == BotStates.JOINED_NOT_RECORDING or state == BotStates.JOINED_RECORDING_PERMISSION_DENIED or state == BotStates.JOINED_RECORDING_PAUSED
 
     @classmethod
     def is_state_that_can_admit_from_waiting_room(cls, state: int):
-        return state == BotStates.JOINED_RECORDING or state == BotStates.JOINED_NOT_RECORDING or state == BotStates.JOINED_RECORDING_PAUSED
+        return state == BotStates.JOINED_RECORDING or state == BotStates.JOINED_NOT_RECORDING or state == BotStates.JOINED_RECORDING_PERMISSION_DENIED or state == BotStates.JOINED_RECORDING_PAUSED
 
     @classmethod
     def is_state_that_can_pause_recording(cls, state: int):
@@ -1149,6 +1168,16 @@ class BotEventManager:
         in_progress_recordings = bot.recordings.filter(state=RecordingStates.IN_PROGRESS)
         if in_progress_recordings.count() != 1:
             raise ValidationError(f"Expected exactly one in progress recording for bot {bot.object_id} in state {BotStates.state_to_api_code(new_state)}, but found {in_progress_recordings.count()}")
+        in_progress_recording = in_progress_recordings.first()
+        RecordingManager.set_recording_paused(in_progress_recording)
+
+    @classmethod
+    def after_new_state_is_joined_recording_permission_denied(cls, bot: Bot, new_state: BotStates):
+        in_progress_recordings = bot.recordings.filter(state=RecordingStates.IN_PROGRESS)
+        if in_progress_recordings.count() > 1:
+            raise ValidationError(f"Expected at most one in progress recording for bot {bot.object_id} in state {BotStates.state_to_api_code(new_state)}, but found {in_progress_recordings.count()}")
+        if in_progress_recordings.count() == 0:
+            return
         in_progress_recording = in_progress_recordings.first()
         RecordingManager.set_recording_paused(in_progress_recording)
 
@@ -1268,6 +1297,9 @@ class BotEventManager:
 
                     if new_state == BotStates.JOINED_RECORDING_PAUSED:
                         cls.after_new_state_is_joined_recording_paused(bot=bot, new_state=new_state)
+
+                    if new_state == BotStates.JOINED_RECORDING_PERMISSION_DENIED:
+                        cls.after_new_state_is_joined_recording_permission_denied(bot=bot, new_state=new_state)
 
                     # If we transitioned to a post meeting state
                     transitioned_to_post_meeting_state = cls.is_post_meeting_state(new_state) and not cls.is_post_meeting_state(old_state)

@@ -106,11 +106,15 @@ def create_mock_zoom_sdk():
 
     # Create a custom MeetingRecordingCtrlEventCallbacks class that actually stores the callback
     class MockMeetingRecordingCtrlEventCallbacks:
-        def __init__(self, onRecordPrivilegeChangedCallback):
+        def __init__(self, onRecordPrivilegeChangedCallback, onLocalRecordingPrivilegeRequestStatusCallback):
             self.stored_callback = onRecordPrivilegeChangedCallback
+            self.stored_local_recording_privilege_request_status_callback = onLocalRecordingPrivilegeRequestStatusCallback
 
         def onRecordPrivilegeChangedCallback(self, can_record):
             return self.stored_callback(can_record)
+
+        def onLocalRecordingPrivilegeRequestStatusCallback(self, status):
+            return self.stored_local_recording_privilege_request_status_callback(status)
 
     base_mock.MeetingRecordingCtrlEventCallbacks = MockMeetingRecordingCtrlEventCallbacks
 
