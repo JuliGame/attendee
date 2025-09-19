@@ -373,11 +373,12 @@ class OutputVideoView(APIView):
         if meeting_type == MeetingTypes.ZOOM and os.getenv("ENABLE_ZOOM_VIDEO_OUTPUT") != "true":
             return Response({"error": "Video output is not supported in this meeting type"}, status=status.HTTP_400_BAD_REQUEST)
 
+        allow_insecure_http = os.getenv("ALLOW_INSECURE_HTTP", "false").lower() == "true"
         # Validate the request data
         url = request.data.get("url")
         if not url:
             return Response({"error": "URL is required"}, status=status.HTTP_400_BAD_REQUEST)
-        if not url.startswith("https://"):
+        if not url.startswith("https://") or (allow_insecure_http and url.startswith("http://")):
             return Response({"error": "URL must start with https://"}, status=status.HTTP_400_BAD_REQUEST)
         if not url.endswith(".mp4"):
             return Response({"error": "URL must end with .mp4"}, status=status.HTTP_400_BAD_REQUEST)
