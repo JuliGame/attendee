@@ -246,6 +246,7 @@ class UserManager {
             fullName: zoomUser.userName,
             profile: '',
             status: zoomUser.state,
+            isHost: zoomUser.isHost,
             humanized_status: zoomUser.state === "active" ? "in_meeting" : "not_in_meeting",
             isCurrentUser: zoomUser.self
         };

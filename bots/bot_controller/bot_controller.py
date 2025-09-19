@@ -1031,6 +1031,7 @@ class BotController:
                 "user_uuid": message["participant_user_uuid"],
                 "full_name": message["participant_full_name"],
                 "is_the_bot": message["participant_is_the_bot"],
+                "is_host": message["participant_is_host"],
             },
         )
 
@@ -1075,6 +1076,7 @@ class BotController:
                 "user_uuid": message["participant_user_uuid"],
                 "full_name": message["participant_full_name"],
                 "is_the_bot": message["participant_is_the_bot"],
+                "is_host": message["participant_is_host"],
             },
         )
 
@@ -1122,6 +1124,7 @@ class BotController:
                 "user_uuid": participant["participant_user_uuid"],
                 "full_name": participant["participant_full_name"],
                 "is_the_bot": participant["participant_is_the_bot"],
+                "is_host": participant["participant_is_host"],
             },
         )
 
@@ -1160,6 +1163,7 @@ class BotController:
                 "user_uuid": participant["participant_user_uuid"],
                 "full_name": participant["participant_full_name"],
                 "is_the_bot": participant["participant_is_the_bot"],
+                "is_host": participant["participant_is_host"],
             },
         )
 

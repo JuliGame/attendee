@@ -400,6 +400,7 @@ class ZoomBotAdapter(BotAdapter):
                 "participant_user_uuid": speaker_object.GetPersistentId(),
                 "participant_full_name": speaker_object.GetUserName(),
                 "participant_is_the_bot": speaker_object.GetUserID() == self.my_participant_id,
+                "participant_is_host": speaker_object.IsHost(),
             }
             self._participant_cache[participant_id] = participant_info
             return participant_info

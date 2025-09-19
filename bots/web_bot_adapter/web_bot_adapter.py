@@ -129,6 +129,7 @@ class WebBotAdapter(BotAdapter):
                 "participant_full_name": self.participants_info[participant_id]["fullName"],
                 "participant_user_uuid": None,
                 "participant_is_the_bot": self.participants_info[participant_id]["isCurrentUser"],
+                "participant_is_host": self.participants_info[participant_id].get("isHost", False),
             }
 
         return None

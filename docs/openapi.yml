@@ -70,6 +70,7 @@ paths:
             - joined_recording_paused
             - joining_breakout_room
             - leaving_breakout_room
+            - joined_recording_permission_denied
         description: Filter bots by state. Can specify multiple states.
       tags:
       - Bots
@@ -709,6 +710,69 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedParticipantEventList'
           description: List of participant events
+        '404':
+          description: Bot not found
+  /api/v1/bots/{object_id}/participants:
+    get:
+      operationId: Get Participants
+      description: Returns the participants for a bot. Results are paginated using
+        cursor pagination.
+      summary: Get participants for a bot
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: query
+        name: cursor
+        schema:
+          type: string
+        description: Cursor for pagination
+      - in: query
+        name: id
+        schema:
+          type: string
+        description: Filter participants by participant ID
+        examples:
+          ParticipantIDExample:
+            value: par_xxxxxxxxxxx
+            summary: Participant ID Example
+      - in: query
+        name: is_host
+        schema:
+          type: boolean
+        description: Filter participants by whether they are the meeting host
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedParticipantList'
+          description: List of participants
         '404':
           description: Bot not found
   /api/v1/bots/{object_id}/pause_recording:
@@ -1531,6 +1595,7 @@ components:
       - joined_recording_paused
       - joining_breakout_room
       - leaving_breakout_room
+      - joined_recording_permission_denied
     Calendar:
       type: object
       properties:
@@ -2112,6 +2177,7 @@ components:
               description: Whether to record chat messages even when the recording
                 is paused. Defaults to false.
               default: false
+          additionalProperties: false
           required: []
           default:
             format: mp4
@@ -2355,6 +2421,45 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ParticipantEvent'
+    PaginatedParticipantList:
+      type: object
+      required:
+      - results
+      properties:
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cD00ODY%3D"
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Participant'
+    Participant:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        uuid:
+          type: string
+        user_uuid:
+          type: string
+          nullable: true
+        is_host:
+          type: boolean
+      required:
+      - id
+      - is_host
+      - name
+      - user_uuid
+      - uuid
     ParticipantEvent:
       type: object
       properties:

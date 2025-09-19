@@ -1637,6 +1637,14 @@ class ChatMessageSerializer(serializers.Serializer):
         return obj.timestamp * 1000
 
 
+class ParticipantSerializer(serializers.Serializer):
+    id = serializers.CharField(source="object_id")
+    name = serializers.CharField(source="full_name")
+    uuid = serializers.CharField()
+    user_uuid = serializers.CharField(allow_null=True)
+    is_host = serializers.BooleanField()
+
+
 class ParticipantEventSerializer(serializers.Serializer):
     id = serializers.CharField(source="object_id")
     participant_name = serializers.CharField(source="participant.full_name")

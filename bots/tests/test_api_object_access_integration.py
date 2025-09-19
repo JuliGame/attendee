@@ -355,6 +355,22 @@ class ApiObjectAccessIntegrationTest(TransactionTestCase):
         response = self._make_authenticated_request("GET", f"/api/v1/bots/{self.bot_b.object_id}/participant_events", self.api_key_a_plain)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    # Tests for Participants View (GET /api/bots/<object_id>/participants)
+    def test_participants_access_control(self):
+        """Test that participants access respects project boundaries"""
+        # API key A can access bot A's participants
+        response = self._make_authenticated_request("GET", f"/api/v1/bots/{self.bot_a.object_id}/participants", self.api_key_a_plain)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Response should be paginated
+        results = response.json().get("results", response.json())
+        if isinstance(results, list):
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["is_host"], False)
+
+        # API key A cannot access bot B's participants
+        response = self._make_authenticated_request("GET", f"/api/v1/bots/{self.bot_b.object_id}/participants", self.api_key_a_plain)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     # Test for cross-project object access protection
     def test_cross_project_object_protection(self):
         """Test that objects from one project cannot be accessed via API key from another project"""
@@ -365,6 +381,7 @@ class ApiObjectAccessIntegrationTest(TransactionTestCase):
             ("GET", f"/api/v1/bots/{self.bot_b.object_id}/recording"),
             ("GET", f"/api/v1/bots/{self.bot_b.object_id}/chat_messages"),
             ("GET", f"/api/v1/bots/{self.bot_b.object_id}/participant_events"),
+            ("GET", f"/api/v1/bots/{self.bot_b.object_id}/participants"),
             ("POST", f"/api/v1/bots/{self.bot_b.object_id}/leave"),
             ("POST", f"/api/v1/bots/{self.bot_b.object_id}/send_chat_message"),
             ("POST", f"/api/v1/bots/{self.bot_b.object_id}/delete_data"),
