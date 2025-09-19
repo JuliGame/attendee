@@ -776,6 +776,39 @@ class WebBotAdapter(BotAdapter):
             return
 
         logger.info(f"Start streaming from webpage: {self.voice_agent_url}")
+
+        # Poll until meetingAudioStream is ready (has >=1 audio track)
+        max_wait_seconds = int(os.getenv("MEETING_AUDIO_READY_TIMEOUT_SECONDS", "10"))
+        poll_interval = 0.2
+        waited = 0.0
+
+        while waited < max_wait_seconds:
+            try:
+                tracks_count = self.driver.execute_script("""
+                    try {
+                        const sm = window.styleManager;
+                        if (!sm || typeof sm.getMeetingAudioStream !== 'function') return -1; // styleManager no listo
+                        const ms = sm.getMeetingAudioStream();
+                        if (!ms) return 0; // aún no creado
+                        const tracks = (ms.getAudioTracks && ms.getAudioTracks()) || [];
+                        return tracks.length || 0;
+                    } catch (e) {
+                        return -2; // error JS
+                    }
+                """)
+            except Exception as e:
+                logger.info(f"Polling meetingAudioStream readiness failed: {e}")
+                tracks_count = -3
+
+            logger.info(f"MeetingAudio readiness: waited={waited:.1f}s tracks={tracks_count}")
+            if isinstance(tracks_count, (int, float)) and tracks_count > 0:
+                break
+
+            time.sleep(poll_interval)
+            waited += poll_interval
+        else:
+            logger.info("Meeting audio stream not ready after timeout; proceeding anyway")
+
         peerConnectionOffer = self.driver.execute_script("return window.botOutputManager.getBotOutputPeerConnectionOffer();")
         logger.info(f"Peer connection offer: {peerConnectionOffer}")
         if peerConnectionOffer.get("error"):
@@ -793,7 +826,6 @@ class WebBotAdapter(BotAdapter):
             logger.info(f"Failed to start streaming, not starting webpage streamer keepalive task. Response: {start_streaming_response.status_code}")
             return
 
-        # Start the keepalive task after successful streaming start
         if self.webpage_streamer_keepalive_task is None or not self.webpage_streamer_keepalive_task.is_alive():
             self.webpage_streamer_keepalive_task = threading.Thread(target=self.send_webpage_streamer_keepalive_periodically, daemon=True)
             self.webpage_streamer_keepalive_task.start()
