@@ -2060,6 +2060,26 @@ components:
                   - universal
                   description: The speech model to use for transcription. See AssemblyAI
                     docs for details.
+                speaker_labels:
+                  type: boolean
+                  description: Whether to enable AssemblyAI's ML-based diarization.
+                    Only needed if multiple people are speaking into a single microphone.
+                    Defaults to false.
+                use_eu_server:
+                  type: boolean
+                  description: Whether to use the EU server for transcription. Defaults
+                    to false.
+                language_detection_options:
+                  type: object
+                  properties:
+                    expected_languages:
+                      type: array
+                      items:
+                        type: string
+                    fallback_language:
+                      type: string
+                  description: Options for controlling the automatic language detection.
+                    See AssemblyAI docs for details.
               additionalProperties: false
             sarvam:
               type: object

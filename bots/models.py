@@ -440,6 +440,26 @@ class Bot(models.Model):
     def assemblyai_speech_model(self):
         return self.settings.get("transcription_settings", {}).get("assembly_ai", {}).get("speech_model", None)
 
+    def assemblyai_speaker_labels(self):
+        return self.settings.get("transcription_settings", {}).get("assembly_ai", {}).get("speaker_labels", False)
+
+    def assemblyai_base_url(self):
+        if os.getenv("ASSEMBLYAI_BASE_URL"):
+            return os.getenv("ASSEMBLYAI_BASE_URL")
+        use_eu_server = self.settings.get("transcription_settings", {}).get("assembly_ai", {}).get("use_eu_server", False)
+        if use_eu_server:
+            return "https://api.eu.assemblyai.com/v2"
+        return "https://api.assemblyai.com/v2"
+
+    def assemblyai_language_detection_options(self):
+        language_detection_options = self.settings.get("transcription_settings", {}).get("assembly_ai", {}).get("language_detection_options", None)
+        if not language_detection_options:
+            return None
+        return {
+            "expected_languages": language_detection_options.get("expected_languages", ["all"]),
+            "fallback_language": language_detection_options.get("fallback_language", "auto"),
+        }
+
     def sarvam_language_code(self):
         return self.settings.get("transcription_settings", {}).get("sarvam", {}).get("language_code", None)
 

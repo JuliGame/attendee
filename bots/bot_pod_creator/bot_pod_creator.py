@@ -174,6 +174,16 @@ class BotPodCreator:
                     )
                 ]
 
+    def get_pod_image_pull_secrets(self):
+        if os.getenv("DISABLE_BOT_POD_IMAGE_PULL_SECRET", "false").lower() == "true":
+            return []
+        
+        return [
+            client.V1LocalObjectReference(
+                name="regcred"
+            )
+        ]
+
     def create_bot_pod(
         self,
         bot_id: int,
@@ -221,11 +231,7 @@ class BotPodCreator:
                 containers=[self.get_bot_container()],
                 service_account_name=os.getenv("BOT_POD_SERVICE_ACCOUNT_NAME", "default"),
                 restart_policy="Never",
-                image_pull_secrets=[
-                    client.V1LocalObjectReference(
-                        name="regcred"
-                    )
-                ],
+                image_pull_secrets=self.get_pod_image_pull_secrets(),
                 termination_grace_period_seconds=60,
                 tolerations= self.get_pod_tolerations()
             )
@@ -249,11 +255,7 @@ class BotPodCreator:
                     containers=[self.get_webpage_streamer_container()],
                     service_account_name=os.getenv("WEBPAGE_STREAMER_POD_SERVICE_ACCOUNT_NAME", "default"),
                     restart_policy="Never",
-                    image_pull_secrets=[
-                        client.V1LocalObjectReference(
-                            name="regcred"
-                        )
-                    ],
+                    image_pull_secrets=self.get_pod_image_pull_secrets(),
                     termination_grace_period_seconds=60,
                     tolerations=self.get_pod_tolerations(),
                     volumes=self.get_webpage_streamer_volumes(),

@@ -316,7 +316,7 @@ def get_transcription_via_assemblyai(utterance):
         return None, {"reason": TranscriptionFailureReasons.CREDENTIALS_NOT_FOUND, "error": "api_key not in credentials"}
 
     headers = {"authorization": api_key}
-    base_url = "https://api.assemblyai.com/v2"
+    base_url = recording.bot.assemblyai_base_url()
 
     payload_mp3 = pcm_to_mp3(utterance.audio_blob.tobytes(), sample_rate=utterance.sample_rate)
 
@@ -347,6 +347,13 @@ def get_transcription_via_assemblyai(utterance):
     speech_model = recording.bot.assemblyai_speech_model()
     if speech_model:
         data["speech_model"] = speech_model
+
+    if recording.bot.assemblyai_speaker_labels():
+        data["speaker_labels"] = True
+
+    language_detection_options = recording.bot.assemblyai_language_detection_options()
+    if language_detection_options:
+        data["language_detection_options"] = language_detection_options
 
     url = f"{base_url}/transcript"
     response = requests.post(url, json=data, headers=headers)
@@ -388,16 +395,18 @@ def get_transcription_via_assemblyai(utterance):
             formatted_words = []
             if words:
                 for word in words:
-                    formatted_words.append(
-                        {
-                            "word": word["text"],
-                            "start": word["start"] / 1000.0,
-                            "end": word["end"] / 1000.0,
-                            "confidence": word["confidence"],
-                        }
-                    )
+                    formatted_word = {
+                        "word": word["text"],
+                        "start": word["start"] / 1000.0,
+                        "end": word["end"] / 1000.0,
+                        "confidence": word["confidence"],
+                    }
+                    if "speaker" in word:
+                        formatted_word["speaker"] = word["speaker"]
 
-            transcription = {"transcript": transcript_text, "words": formatted_words}
+                    formatted_words.append(formatted_word)
+
+            transcription = {"transcript": transcript_text, "words": formatted_words, "language": transcription_result.get("language_code", None)}
             return transcription, None
 
         elif transcription_result["status"] == "error":
