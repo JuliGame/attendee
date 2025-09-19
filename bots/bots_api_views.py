@@ -378,8 +378,8 @@ class OutputVideoView(APIView):
         url = request.data.get("url")
         if not url:
             return Response({"error": "URL is required"}, status=status.HTTP_400_BAD_REQUEST)
-        if not url.startswith("https://") or (allow_insecure_http and url.startswith("http://")):
-            return Response({"error": "URL must start with https://"}, status=status.HTTP_400_BAD_REQUEST)
+        if not (url.lower().startswith("https://") or (allow_insecure_http and url.lower().startswith("http://"))):
+            return Response({"error": "URL must start with https:// or http:// if ALLOW_INSECURE_HTTP is true"}, status=status.HTTP_400_BAD_REQUEST)
         if not url.endswith(".mp4"):
             return Response({"error": "URL must end with .mp4"}, status=status.HTTP_400_BAD_REQUEST)
 

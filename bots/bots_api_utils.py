@@ -361,7 +361,7 @@ def validate_webhook_data(url, triggers, project, bot=None):
     # Check if URL is valid
     allow_insecure_http = os.getenv("ALLOW_INSECURE_HTTP", "false").lower() == "true"
     if not (url.startswith("https://") or (allow_insecure_http and url.startswith("http://"))):
-        return "webhook URL must start with https://"
+        return "webhook URL must start with https:// or http:// if ALLOW_INSECURE_HTTP is true"
 
     # Check for duplicate URLs
     existing_webhook_query = project.webhook_subscriptions.filter(url=url)
