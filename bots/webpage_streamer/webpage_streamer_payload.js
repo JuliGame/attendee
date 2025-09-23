@@ -8,28 +8,25 @@
   const ctx = new AC({ latencyHint: "interactive" });
 
   let currentCleanup = null;          // function to tear down current virtual source
-  let currentVirtualTrack = null;     // MediaStreamTrack served as the "mic"
+  let currentVirtualTrack = null;     // Persistent MediaStreamTrack served as the "mic"
 
   const resumeCtx = () => { if (ctx.state === "suspended") ctx.resume().catch(()=>{}); };
   ["pointerdown","keydown","click","touchstart"].forEach(ev =>
     window.addEventListener(ev, resumeCtx, { capture: true })
   );
 
-  function setVirtualMicTrackFromNodeChain(connectFn, label = "Virtual Microphone") {
-    // Tear down old source
+  // Create one persistent destination/track for the lifetime of the page
+  const persistentDest = ctx.createMediaStreamDestination();
+  const persistentTrack = persistentDest.stream.getAudioTracks()[0];
+  try { Object.defineProperty(persistentTrack, "label", { value: "Virtual Microphone", configurable: true }); } catch {}
+  currentVirtualTrack = persistentTrack;
+
+  function setVirtualMicTrackFromNodeChain(connectFn) {
     if (typeof currentCleanup === "function") { try { currentCleanup(); } catch {} }
     currentCleanup = null;
 
-    const dest = ctx.createMediaStreamDestination();
-    const cleanup = connectFn(dest);
-
-    const track = dest.stream.getAudioTracks()[0];
-    try { Object.defineProperty(track, "label", { value: label, configurable: true }); } catch {}
-    currentVirtualTrack = track;
-    currentCleanup = () => {
-      try { track.stop(); } catch {}
-      try { cleanup && cleanup(); } catch {}
-    };
+    const cleanup = connectFn(persistentDest);
+    currentCleanup = () => { try { cleanup && cleanup(); } catch {} };
     resumeCtx();
   }
 
@@ -43,7 +40,7 @@
       osc.connect(gain).connect(dest);
       try { osc.start(); } catch {}
       return () => { try { osc.stop(); } catch {} try { osc.disconnect(); gain.disconnect(); } catch {} };
-    }, "Virtual Microphone (Hum)");
+    });
   }
 
   function setVirtualMicFromStream(stream) {
@@ -63,7 +60,7 @@
         try { src.disconnect(); gain.disconnect(); } catch {}
         if (t) try { t.removeEventListener("ended", onEnded); } catch {}
       };
-    }, "Virtual Microphone (Bridged)");
+    });
   }
 
   // Expose a tiny API so other code can update the virtual mic source
@@ -116,10 +113,10 @@
       realVideo.getVideoTracks().forEach(t => out.addTrack(t));
     }
 
-    // Provide the current virtual mic. Clone so if the app stops its track,
-    // it won't kill the shared source.
-    const virtual = currentVirtualTrack ? currentVirtualTrack.clone()
-                                        : (setVirtualMicToHum(), currentVirtualTrack.clone());
+  // Provide a clone of the persistent virtual mic track so if the app
+  // detiene el track, no rompe la fuente compartida.
+  if (!currentVirtualTrack) setVirtualMicToHum();
+  const virtual = currentVirtualTrack.clone();
 
     // Best-effort apply constraints (usually a no-op for virtual track)
     try {
