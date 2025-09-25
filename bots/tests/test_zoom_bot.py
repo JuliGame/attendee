@@ -1062,6 +1062,10 @@ class TestZoomBot(TransactionTestCase):
         self.assertEqual(self.recording.utterances.count(), 1)
         self.assertIsNotNone(utterance.transcription)
 
+        # Verify that the recording has an audio chunk
+        self.assertEqual(self.recording.audio_chunks.count(), 1)
+        self.assertEqual(utterance.audio_chunk, self.recording.audio_chunks.first())
+
         # Verify chat message was processed
         chat_messages = ChatMessage.objects.filter(bot=self.bot)
         self.assertEqual(chat_messages.count(), 1)
@@ -3075,6 +3079,10 @@ class TestZoomBot(TransactionTestCase):
         utterance = self.recording.utterances.filter(failure_data__isnull=True).first()
         self.assertEqual(self.recording.utterances.count(), 1)
         self.assertIsNotNone(utterance.transcription)
+
+        # Verify that the recording has an audio chunk
+        self.assertEqual(self.recording.audio_chunks.count(), 1)
+        self.assertEqual(utterance.audio_chunk, self.recording.audio_chunks.first())
 
         # Verify that no recording file was created/saved
         self.assertFalse(self.recording.file.name, "Recording file should not exist when format is 'none'")

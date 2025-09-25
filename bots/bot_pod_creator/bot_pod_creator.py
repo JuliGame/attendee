@@ -3,6 +3,7 @@ import os
 import uuid
 from typing import Dict, Optional
 
+from django.conf import settings
 from kubernetes import client, config
 
 logger = logging.getLogger(__name__)
@@ -10,15 +11,15 @@ logger = logging.getLogger(__name__)
 # fmt: off
 
 class BotPodCreator:
-    def __init__(self, namespace: str = "attendee"):
+    def __init__(self):
         try:
             config.load_incluster_config()
         except config.ConfigException:
             config.load_kube_config()
         
         self.v1 = client.CoreV1Api()
-        self.namespace = namespace
-        self.webpage_streamer_namespace = namespace + "-webpage-streamer"
+        self.namespace = settings.BOT_POD_NAMESPACE
+        self.webpage_streamer_namespace = settings.WEBPAGE_STREAMER_POD_NAMESPACE
         
         # Get configuration from environment variables
         self.app_name = os.getenv('CUBER_APP_NAME', 'attendee')
@@ -216,6 +217,12 @@ class BotPodCreator:
             bot_pod_labels["network-role"] = "attendee-webpage-streamer-receiver"
 
         annotations = {}
+        
+        # Currently, experimenting with this flag to see if it helps with bot pod evictions
+        # It makes the pod take longer to be provisioned, so not enabling by default.
+        if os.getenv("USE_GKE_EXTENDED_DURATION_FOR_BOT_PODS", "false").lower() == "true":
+            annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] = "false"
+
         if os.getenv("USING_KARPENTER", "false").lower() == "true":
             annotations["karpenter.sh/do-not-disrupt"] = "true"
             annotations["karpenter.sh/do-not-evict"] = "true"

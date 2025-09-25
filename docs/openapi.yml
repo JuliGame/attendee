@@ -292,22 +292,6 @@ paths:
           description: Scheduled bot deleted successfully
         '404':
           description: Bot not found
-  /api/v1/bots/{object_id}/admit_from_waiting_room:
-    post:
-      operationId: api_v1_bots_admit_from_waiting_room_create
-      parameters:
-      - in: path
-        name: object_id
-        schema:
-          type: string
-        required: true
-      tags:
-      - api
-      security:
-      - {}
-      responses:
-        '200':
-          description: No response body
   /api/v1/bots/{object_id}/chat_messages:
     get:
       operationId: Get Chat Messages
@@ -2080,6 +2064,7 @@ components:
                       type: string
                   description: Options for controlling the automatic language detection.
                     See AssemblyAI docs for details.
+                  additionalProperties: false
               additionalProperties: false
             sarvam:
               type: object

@@ -324,7 +324,8 @@ class Bot(models.Model):
 
             # Delete all utterances and recording files for each recording
             for recording in self.recordings.all():
-                # Delete all utterances first
+                # Delete all audio chunks and utterances first
+                recording.audio_chunks.all().delete()
                 recording.utterances.all().delete()
 
                 # Delete the actual recording file if it exists
@@ -868,6 +869,7 @@ class BotEventSubTypes(models.IntegerChoices):
     FATAL_ERROR_ATTENDEE_INTERNAL_ERROR = 22, "Fatal error - Attendee internal error"
     BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION = 23, "Bot recording permission denied - Host denied permission"
     BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT = 24, "Bot recording permission denied - Request timed out"
+    BOT_RECORDING_PERMISSION_DENIED_HOST_CLIENT_CANNOT_GRANT_PERMISSION = 25, "Bot recording permission denied - Host client cannot grant permission"
 
     @classmethod
     def sub_type_to_api_code(cls, value):
@@ -897,6 +899,7 @@ class BotEventSubTypes(models.IntegerChoices):
             cls.FATAL_ERROR_ATTENDEE_INTERNAL_ERROR: "attendee_internal_error",
             cls.BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION: "host_denied_permission",
             cls.BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT: "request_timed_out",
+            cls.BOT_RECORDING_PERMISSION_DENIED_HOST_CLIENT_CANNOT_GRANT_PERMISSION: "host_client_cannot_grant_permission",
         }
         return mapping.get(value)
 
@@ -946,7 +949,7 @@ class BotEvent(models.Model):
                     (Q(event_type=BotEventTypes.LEAVE_REQUESTED) & (Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_USER_REQUESTED) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_SILENCE) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_MAX_UPTIME_EXCEEDED) | Q(event_sub_type__isnull=True)))
                     |
                     # For BOT_RECORDING_PERMISSION_DENIED event type, must have one of the valid event subtypes
-                    (Q(event_type=BotEventTypes.BOT_RECORDING_PERMISSION_DENIED) & (Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION) | Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT)))
+                    (Q(event_type=BotEventTypes.BOT_RECORDING_PERMISSION_DENIED) & (Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION) | Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT) | Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_HOST_CLIENT_CANNOT_GRANT_PERMISSION)))
                     |
                     # For all other events, event_sub_type must be null
                     (~Q(event_type=BotEventTypes.FATAL_ERROR) & ~Q(event_type=BotEventTypes.COULD_NOT_JOIN) & ~Q(event_type=BotEventTypes.LEAVE_REQUESTED) & Q(event_sub_type__isnull=True))
@@ -1715,6 +1718,132 @@ class TranscriptionFailureReasons(models.TextChoices):
     INTERNAL_ERROR = "internal_error"
     # This reason applies to the transcription operation as a whole, not a specific utterance
     UTTERANCES_STILL_IN_PROGRESS_WHEN_RECORDING_TERMINATED = "utterances_still_in_progress_when_recording_terminated"
+    UTTERANCES_STILL_IN_PROGRESS_WHEN_TRANSCRIPTION_TERMINATED = "utterances_still_in_progress_when_transcription_terminated"
+
+
+class AsyncTranscriptionStates(models.IntegerChoices):
+    NOT_STARTED = 1, "Not Started"
+    IN_PROGRESS = 2, "In Progress"
+    COMPLETE = 3, "Complete"
+    FAILED = 4, "Failed"
+
+    @classmethod
+    def state_to_api_code(cls, value):
+        """Returns the API code for a given state value"""
+        mapping = {
+            cls.NOT_STARTED: "not_started",
+            cls.IN_PROGRESS: "in_progress",
+            cls.COMPLETE: "complete",
+            cls.FAILED: "failed",
+        }
+        return mapping.get(value)
+
+
+class AsyncTranscription(models.Model):
+    OBJECT_ID_PREFIX = "tran_"
+    object_id = models.CharField(max_length=32, unique=True, editable=False)
+    state = models.IntegerField(choices=AsyncTranscriptionStates.choices, default=AsyncTranscriptionStates.NOT_STARTED)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="async_transcriptions")
+    settings = models.JSONField(null=False, default=dict)
+    failure_data = models.JSONField(null=True, default=None)
+    version = IntegerVersionField()
+
+    def save(self, *args, **kwargs):
+        if not self.object_id:
+            # Generate a random 16-character string
+            random_string = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+            self.object_id = f"{self.OBJECT_ID_PREFIX}{random_string}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Post Meeting Transcription {self.object_id} - {self.get_state_display()}"
+
+
+class AsyncTranscriptionManager:
+    @classmethod
+    def set_async_transcription_in_progress(cls, async_transcription: AsyncTranscription):
+        async_transcription.refresh_from_db()
+
+        if async_transcription.state == AsyncTranscriptionStates.IN_PROGRESS:
+            return
+        if async_transcription.state != AsyncTranscriptionStates.NOT_STARTED:
+            raise ValueError(f"Invalid state transition. Async transcription {async_transcription.id} is in state {async_transcription.get_state_display()}")
+
+        async_transcription.state = AsyncTranscriptionStates.IN_PROGRESS
+        async_transcription.started_at = timezone.now()
+        async_transcription.save()
+
+        cls.delivery_webhook(async_transcription)
+
+    @classmethod
+    def set_async_transcription_complete(cls, async_transcription: AsyncTranscription):
+        async_transcription.refresh_from_db()
+
+        if async_transcription.state == AsyncTranscriptionStates.COMPLETE:
+            return
+        if async_transcription.state != AsyncTranscriptionStates.IN_PROGRESS:
+            raise ValueError(f"Invalid state transition. Async transcription {async_transcription.id} is in state {async_transcription.get_state_display()}")
+
+        async_transcription.state = AsyncTranscriptionStates.COMPLETE
+        async_transcription.completed_at = timezone.now()
+        async_transcription.save()
+
+        cls.delivery_webhook(async_transcription)
+
+    @classmethod
+    def delivery_webhook(cls, async_transcription: AsyncTranscription):
+        trigger_webhook(
+            webhook_trigger_type=WebhookTriggerTypes.ASYNC_TRANSCRIPTION_STATE_CHANGE,
+            bot=async_transcription.recording.bot,
+            payload={
+                "state": AsyncTranscriptionStates.state_to_api_code(async_transcription.state),
+                "id": async_transcription.object_id,
+                "failure_data": async_transcription.failure_data,
+            },
+        )
+
+    @classmethod
+    def set_async_transcription_failed(cls, async_transcription: AsyncTranscription, failure_data: dict):
+        async_transcription.refresh_from_db()
+
+        if async_transcription.state == AsyncTranscriptionStates.FAILED:
+            return
+        if async_transcription.state != AsyncTranscriptionStates.IN_PROGRESS and async_transcription.state != AsyncTranscriptionStates.NOT_STARTED:
+            raise ValueError(f"Invalid state transition. Async transcription {async_transcription.id} is in state {async_transcription.get_state_display()}")
+
+        async_transcription.state = AsyncTranscriptionStates.FAILED
+        async_transcription.failure_data = failure_data
+        async_transcription.failed_at = timezone.now()
+        async_transcription.save()
+
+        cls.delivery_webhook(async_transcription)
+
+
+class AudioChunk(models.Model):
+    class Sources(models.IntegerChoices):
+        PER_PARTICIPANT_AUDIO = 1, "Per Participant Audio"
+        MIXED_AUDIO = 2, "Mixed Audio"
+
+    class AudioFormat(models.IntegerChoices):
+        PCM = 1, "PCM"
+        MP3 = 2, "MP3"
+
+    recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="audio_chunks")
+    audio_blob = models.BinaryField()
+    audio_format = models.IntegerField(choices=AudioFormat.choices, default=AudioFormat.PCM)
+    timestamp_ms = models.BigIntegerField()
+    duration_ms = models.IntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    sample_rate = models.IntegerField()
+
+    source = models.IntegerField(choices=Sources.choices, default=Sources.PER_PARTICIPANT_AUDIO)
+    participant = models.ForeignKey(Participant, on_delete=models.PROTECT, related_name="audio_chunks")
 
 
 class Utterance(models.Model):
@@ -1731,9 +1860,10 @@ class Utterance(models.Model):
         MP3 = 2, "MP3"
 
     recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="utterances")
+    # If none, the utterance is part of a real time transcription
+    async_transcription = models.ForeignKey(AsyncTranscription, on_delete=models.CASCADE, related_name="utterances", null=True, blank=True)
+    audio_chunk = models.ForeignKey(AudioChunk, on_delete=models.SET_NULL, related_name="utterances", null=True, blank=True)
     participant = models.ForeignKey(Participant, on_delete=models.PROTECT, related_name="utterances")
-    audio_blob = models.BinaryField()
-    audio_format = models.IntegerField(choices=AudioFormat.choices, default=AudioFormat.PCM, null=True)
     timestamp_ms = models.BigIntegerField()
     duration_ms = models.IntegerField()
     transcription = models.JSONField(null=True, default=None)
@@ -1741,15 +1871,32 @@ class Utterance(models.Model):
     transcription_attempt_count = models.IntegerField(default=0)
     failure_data = models.JSONField(null=True, default=None)
     source_uuid = models.CharField(max_length=255, null=True, unique=True)
-    sample_rate = models.IntegerField(null=True, default=None)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     source = models.IntegerField(choices=Sources.choices, default=Sources.PER_PARTICIPANT_AUDIO, null=False)
 
+    # These columns are deprecated, since we now have a separate AudioChunk model to store info about the source audio
+    # We are keeping them for backwards compatibility. They will eventually be removed.
+    audio_blob = models.BinaryField()
+    audio_format = models.IntegerField(choices=AudioFormat.choices, default=AudioFormat.PCM, null=True)
+    sample_rate = models.IntegerField(null=True, default=None)
+
     def __str__(self):
         return f"Utterance at {self.timestamp_ms}ms ({self.duration_ms}ms long)"
+
+    # Helper methods, because we may be working with an outdated model that is still using the audio_blob field
+    # on the utterance model and not using the separate audio chunk model.
+    def get_audio_blob(self):
+        if self.audio_chunk:
+            return self.audio_chunk.audio_blob
+        return self.audio_blob
+
+    def get_sample_rate(self):
+        if self.audio_chunk:
+            return self.audio_chunk.sample_rate
+        return self.sample_rate
 
 
 class Credentials(models.Model):
@@ -2109,6 +2256,7 @@ class WebhookTriggerTypes(models.IntegerChoices):
     PARTICIPANT_EVENTS_JOIN_LEAVE = 4, "Participant Join/Leave"
     CALENDAR_EVENTS_UPDATE = 5, "Calendar Events Update"
     CALENDAR_STATE_CHANGE = 6, "Calendar State Change"
+    ASYNC_TRANSCRIPTION_STATE_CHANGE = 7, "Async Transcription State Change"
     # add other event types here
 
     @classmethod
@@ -2121,6 +2269,7 @@ class WebhookTriggerTypes(models.IntegerChoices):
             cls.PARTICIPANT_EVENTS_JOIN_LEAVE: "participant_events.join_leave",
             cls.CALENDAR_EVENTS_UPDATE: "calendar.events_update",
             cls.CALENDAR_STATE_CHANGE: "calendar.state_change",
+            cls.ASYNC_TRANSCRIPTION_STATE_CHANGE: "async_transcription.state_change",
         }
 
     @classmethod

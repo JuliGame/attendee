@@ -19,6 +19,8 @@ from django.conf import settings
 
 from .automatic_leave_configuration import AutomaticLeaveConfiguration
 from .models import (
+    AsyncTranscription,
+    AsyncTranscriptionStates,
     Bot,
     BotChatMessageToOptions,
     BotEventSubTypes,
@@ -1942,3 +1944,22 @@ class CalendarEventSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = fields
+
+
+class AsyncTranscriptionSerializer(serializers.ModelSerializer):
+    bot_id = serializers.SerializerMethodField()
+    state = serializers.SerializerMethodField()
+    id = serializers.CharField(source="object_id")
+
+    class Meta:
+        model = AsyncTranscription
+        fields = ["bot_id", "id", "created_at", "updated_at", "state", "failure_data"]
+        read_only_fields = fields
+
+    def get_bot_id(self, obj):
+        """Return the bot's object_id from the related recording"""
+        return obj.recording.bot.object_id
+
+    def get_state(self, obj):
+        """Return the state as an API code"""
+        return AsyncTranscriptionStates.state_to_api_code(obj.state)

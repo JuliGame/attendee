@@ -22,6 +22,8 @@ from .bots_api_utils import BotCreationSource, create_bot, create_bot_chat_messa
 from .launch_bot_utils import launch_bot
 from .meeting_url_utils import meeting_type_from_url
 from .models import (
+    AsyncTranscription,
+    AsyncTranscriptionStates,
     Bot,
     BotEventManager,
     BotEventSubTypes,
@@ -40,6 +42,7 @@ from .models import (
     Utterance,
 )
 from .serializers import (
+    AsyncTranscriptionSerializer,
     BotChatMessageRequestSerializer,
     BotImageSerializer,
     BotSerializer,
@@ -52,6 +55,7 @@ from .serializers import (
     SpeechSerializer,
     TranscriptUtteranceSerializer,
 )
+from .tasks import process_async_transcription
 from .throttling import ProjectPostThrottle
 
 TokenHeaderParameter = [
@@ -746,8 +750,16 @@ class TranscriptView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            async_transcription = None
+            if request.query_params.get("async_transcription_id"):
+                async_transcription = recording.async_transcriptions.get(
+                    object_id=request.query_params.get("async_transcription_id"),
+                )
+                if async_transcription.state != AsyncTranscriptionStates.COMPLETE:
+                    return Response({"error": f"Async transcription {async_transcription.object_id} is not complete. It is in state {AsyncTranscriptionStates.state_to_api_code(async_transcription.state)}"}, status=status.HTTP_400_BAD_REQUEST)
+
             # Get all utterances with transcriptions, sorted by timeline
-            utterances_query = Utterance.objects.select_related("participant").filter(recording=recording, transcription__isnull=False)
+            utterances_query = Utterance.objects.select_related("participant").filter(recording=recording, transcription__isnull=False, async_transcription=async_transcription)
 
             # Apply updated_after filter if provided
             updated_after = request.query_params.get("updated_after")
@@ -784,6 +796,44 @@ class TranscriptView(APIView):
             serializer = TranscriptUtteranceSerializer(transcript_data, many=True)
             return Response(serializer.data)
 
+        except Bot.DoesNotExist:
+            return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
+        except AsyncTranscription.DoesNotExist:
+            return Response({"error": "Async Transcription not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    def post(self, request, object_id):
+        try:
+            bot = Bot.objects.get(object_id=object_id, project=request.auth.project)
+
+            if not bot.project.organization.is_async_transcription_enabled:
+                return Response({"error": "Async transcription is not enabled for your account."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if bot.state != BotStates.ENDED:
+                return Response({"error": "Cannot create async transcription because bot is not in state ended. It is in state " + BotStates.state_to_api_code(bot.state)}, status=status.HTTP_400_BAD_REQUEST)
+
+            recording = Recording.objects.filter(bot=bot, is_default_recording=True).first()
+            if not recording:
+                return Response(
+                    {"error": "No recording found for bot"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if not recording.audio_chunks.exists():
+                return Response({"error": "Cannot create transcription because the recording audio chunks have been deleted."}, status=status.HTTP_400_BAD_REQUEST)
+
+            existing_async_transcription_count = AsyncTranscription.objects.filter(
+                recording=recording,
+            ).count()
+            # We only allow a max of 4 async transcriptions per recording
+            if existing_async_transcription_count >= 4:
+                return Response({"error": "You cannot have more than 4 async transcriptions per bot."}, status=status.HTTP_400_BAD_REQUEST)
+
+            async_transcription = AsyncTranscription.objects.create(recording=recording)
+
+            # Create celery task to process the async transcription
+            process_async_transcription.delay(async_transcription.id)
+
+            return Response(AsyncTranscriptionSerializer(async_transcription).data)
         except Bot.DoesNotExist:
             return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1052,6 +1102,7 @@ class AdmitFromWaitingRoomView(APIView):
     authentication_classes = [ApiKeyAuthentication]
     throttle_classes = [ProjectPostThrottle]
 
+    @extend_schema(exclude=True)
     def post(self, request, object_id):
         try:
             bot = Bot.objects.get(object_id=object_id, project=request.auth.project)

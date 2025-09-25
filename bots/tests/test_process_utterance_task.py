@@ -4,6 +4,7 @@ from unittest import mock
 from django.test import TransactionTestCase
 
 from bots.models import (
+    AudioChunk,
     Bot,
     Credentials,
     Organization,
@@ -38,13 +39,13 @@ class ProcessUtteranceTaskTest(TransactionTestCase):
         )
 
         self.participant = Participant.objects.create(bot=self.bot, uuid=str(uuid.uuid4()))
+        self.audio_chunk = AudioChunk.objects.create(recording=self.recording, participant=self.participant, audio_blob=b"rawpcmbytes", timestamp_ms=0, duration_ms=500, sample_rate=16000)
         self.utterance = Utterance.objects.create(
             recording=self.recording,
             participant=self.participant,
-            audio_blob=b"rawpcmbytes",
+            audio_chunk=self.audio_chunk,
             timestamp_ms=0,
             duration_ms=500,
-            sample_rate=16_000,
         )
         self.utterance.refresh_from_db()
 
@@ -239,7 +240,8 @@ class DeepgramPrerecordedTranscriptionRedactionTest(TransactionTestCase):
 
         # Create a proper audio blob as numpy array
         audio_data = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
-        utterance = Utterance.objects.create(recording=recording, participant=participant, audio_blob=audio_data, timestamp_ms=0, duration_ms=1000, sample_rate=16000)
+        audio_chunk = AudioChunk.objects.create(recording=recording, participant=participant, audio_blob=audio_data, timestamp_ms=0, duration_ms=1000, sample_rate=16000)
+        utterance = Utterance.objects.create(recording=recording, participant=participant, audio_chunk=audio_chunk, timestamp_ms=0, duration_ms=1000)
         return utterance
 
     @mock.patch("deepgram.PrerecordedOptions")
@@ -271,7 +273,7 @@ class DeepgramPrerecordedTranscriptionRedactionTest(TransactionTestCase):
         self.assertEqual(call_kwargs["redact"], ["pii", "pci", "numbers"])
 
         # Verify other expected parameters are also present
-        expected_params = {"model": bot.deepgram_model(), "smart_format": True, "language": bot.deepgram_language(), "detect_language": bot.deepgram_detect_language(), "keyterm": bot.deepgram_keyterms(), "keywords": bot.deepgram_keywords(), "encoding": "linear16", "sample_rate": utterance.sample_rate, "redact": ["pii", "pci", "numbers"]}
+        expected_params = {"model": bot.deepgram_model(), "smart_format": True, "language": bot.deepgram_language(), "detect_language": bot.deepgram_detect_language(), "keyterm": bot.deepgram_keyterms(), "keywords": bot.deepgram_keywords(), "encoding": "linear16", "sample_rate": utterance.audio_chunk.sample_rate, "redact": ["pii", "pci", "numbers"]}
 
         for param, expected_value in expected_params.items():
             self.assertIn(param, call_kwargs)
@@ -421,7 +423,7 @@ class DeepgramPrerecordedTranscriptionRedactionTest(TransactionTestCase):
         self.assertEqual(call_kwargs["keywords"], ["meeting", "agenda"])
         self.assertEqual(call_kwargs["smart_format"], True)
         self.assertEqual(call_kwargs["encoding"], "linear16")
-        self.assertEqual(call_kwargs["sample_rate"], utterance.sample_rate)
+        self.assertEqual(call_kwargs["sample_rate"], utterance.audio_chunk.sample_rate)
 
     def _run_task(self):
         """Invoke the Celery task with the test utterance id (synchronously)."""
@@ -532,13 +534,13 @@ class DeepgramProviderTest(TransactionTestCase):
             state=RecordingStates.COMPLETE,
         )
         self.participant = Participant.objects.create(bot=self.bot, uuid=str(uuid.uuid4()))
+        self.audio_chunk = AudioChunk.objects.create(recording=self.recording, participant=self.participant, audio_blob=b"\x01\x02", timestamp_ms=0, duration_ms=500, sample_rate=16000)
         self.utterance = Utterance.objects.create(
             recording=self.recording,
             participant=self.participant,
-            audio_blob=b"\x01\x02",
+            audio_chunk=self.audio_chunk,
             timestamp_ms=0,
             duration_ms=500,
-            sample_rate=16_000,
         )
         self.utterance.refresh_from_db()
         # Minimal Deepgram creds
@@ -661,13 +663,13 @@ class GladiaProviderTest(TransactionTestCase):
         )
 
         self.participant = Participant.objects.create(bot=self.bot, uuid="p1")
+        self.audio_chunk = AudioChunk.objects.create(recording=self.recording, participant=self.participant, audio_blob=b"pcm-bytes", timestamp_ms=0, duration_ms=600, sample_rate=16000)
         self.utterance = Utterance.objects.create(
             recording=self.recording,
             participant=self.participant,
-            audio_blob=b"pcm-bytes",
+            audio_chunk=self.audio_chunk,
             timestamp_ms=0,
             duration_ms=600,
-            sample_rate=16_000,
         )
         self.utterance.refresh_from_db()
         # "Real" credential row – we'll monkey‑patch get_credentials() later
@@ -790,13 +792,13 @@ class OpenAIProviderTest(TransactionTestCase):
         )
 
         self.participant = Participant.objects.create(bot=self.bot, uuid="p‑1")
+        self.audio_chunk = AudioChunk.objects.create(recording=self.rec, participant=self.participant, audio_blob=b"pcm", timestamp_ms=0, duration_ms=100, sample_rate=16000)
         self.utt = Utterance.objects.create(
             recording=self.rec,
             participant=self.participant,
-            audio_blob=b"pcm",
+            audio_chunk=self.audio_chunk,
             timestamp_ms=0,
             duration_ms=100,
-            sample_rate=16_000,
         )
         self.utt.refresh_from_db()
         # Real credentials row (the crypto doesn't matter – we patch .get_credentials)
@@ -999,13 +1001,13 @@ class AssemblyAIProviderTest(TransactionTestCase):
         )
 
         self.participant = Participant.objects.create(bot=self.bot, uuid="p1")
+        self.audio_chunk = AudioChunk.objects.create(recording=self.recording, participant=self.participant, audio_blob=b"pcm-bytes", timestamp_ms=0, duration_ms=600, sample_rate=16000)
         self.utterance = Utterance.objects.create(
             recording=self.recording,
             participant=self.participant,
-            audio_blob=b"pcm-bytes",
+            audio_chunk=self.audio_chunk,
             timestamp_ms=0,
             duration_ms=600,
-            sample_rate=16_000,
         )
         self.utterance.refresh_from_db()
         self.cred = CredModel.objects.create(
@@ -1241,13 +1243,13 @@ class SarvamProviderTest(TransactionTestCase):
         )
 
         self.participant = Participant.objects.create(bot=self.bot, uuid="p1")
+        self.audio_chunk = AudioChunk.objects.create(recording=self.recording, participant=self.participant, audio_blob=b"pcm-bytes", timestamp_ms=0, duration_ms=600, sample_rate=16000)
         self.utterance = Utterance.objects.create(
             recording=self.recording,
             participant=self.participant,
-            audio_blob=b"pcm-bytes",
+            audio_chunk=self.audio_chunk,
             timestamp_ms=0,
             duration_ms=600,
-            sample_rate=16_000,
         )
         self.utterance.refresh_from_db()
         self.cred = Credentials.objects.create(
@@ -1326,13 +1328,13 @@ class ElevenLabsProviderTest(TransactionTestCase):
         )
 
         self.participant = Participant.objects.create(bot=self.bot, uuid="p1")
+        self.audio_chunk = AudioChunk.objects.create(recording=self.recording, participant=self.participant, audio_blob=b"pcm-bytes", timestamp_ms=0, duration_ms=600, sample_rate=16000)
         self.utterance = Utterance.objects.create(
             recording=self.recording,
             participant=self.participant,
-            audio_blob=b"pcm-bytes",
+            audio_chunk=self.audio_chunk,
             timestamp_ms=0,
             duration_ms=600,
-            sample_rate=16_000,
         )
         self.utterance.refresh_from_db()
 
