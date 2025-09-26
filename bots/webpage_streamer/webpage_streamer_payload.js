@@ -152,27 +152,69 @@
   // ---------- Your WebRTC fetcher: pipe remote audio into the virtual mic ----------
   async function startReceivingMeetingAudio() {
     const pc = new RTCPeerConnection();
+    console.log("[WS] startReceivingMeetingAudio: RTCPeerConnection created");
+    try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:"[WS] startReceivingMeetingAudio: RTCPeerConnection created"})}); } catch {}
+
+    pc.oniceconnectionstatechange = () => {
+      console.log("[WS] pc.iceConnectionState=", pc.iceConnectionState);
+      try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:`[WS] pc.iceConnectionState=${pc.iceConnectionState}`})}); } catch {}
+    };
+    pc.onconnectionstatechange = () => {
+      console.log("[WS] pc.connectionState=", pc.connectionState);
+      try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:`[WS] pc.connectionState=${pc.connectionState}`})}); } catch {}
+    };
 
     // Collect remote audio
     const ms = new MediaStream();
     pc.ontrack = (ev) => {
+      console.log("[WS] ontrack: kind=", ev.track?.kind, "id=", ev.track?.id);
+      try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:`[WS] ontrack kind=${ev.track?.kind} id=${ev.track?.id}`})}); } catch {}
       ms.addTrack(ev.track);
       if (ms.getAudioTracks().length > 0) {
         // >>> This line makes the remote stream BECOME the microphone <<<
         window.__setVirtualMicFromStream(ms);
+  
+        // NEW: Also feed the same remote audio into the mic that gUM returns
+        // so pages that receive botOutputAudioTrack actually get audio even if
+        // gUM was called before the remote stream arrived.
+        try {
+          if (window.botOutputManager) {
+            window.botOutputManager.initializeBotOutputAudioTrack();
+            const ac = window.botOutputManager.audioContextForBotOutput;
+            const src = ac.createMediaStreamSource(ms);
+            src.connect(window.botOutputManager.gainNode);
+          }
+        } catch (e) {
+          console.error("Failed to connect remote audio to bot output mic:", e);
+        }
       }
     };
 
     pc.addTransceiver("audio", { direction: "recvonly" });
 
     const offer = await pc.createOffer();
+    console.log("[WS] Created local offer for meeting audio");
+    try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:"[WS] Created local offer for meeting audio"})}); } catch {}
     await pc.setLocalDescription(offer);
+    console.log("[WS] Set local description");
+    try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:"[WS] Set local description"})}); } catch {}
 
-    const res = await fetch("http://localhost:8000/offer_meeting_audio", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type })
-    });
+    let res;
+    try {
+      console.log("[WS] POSTing offer to /offer_meeting_audio");
+      try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:"[WS] POSTing offer to /offer_meeting_audio"})}); } catch {}
+      res = await fetch("/streamer/offer_meeting_audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type })
+      });
+      console.log("[WS] /offer_meeting_audio response status=", res.status);
+      try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:`[WS] /offer_meeting_audio response status=${res.status}`})}); } catch {}
+    } catch (e) {
+      console.error("[WS] /offer_meeting_audio fetch failed:", e);
+      try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:`[WS] /offer_meeting_audio fetch failed: ${e?.message || e}`})}); } catch {}
+      return;
+    }
 
     if (!res.ok) {
       const t = await res.text();
@@ -181,7 +223,11 @@
     }
 
     const answer = await res.json();
+    console.log("[WS] Received remote answer for meeting audio");
+    try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:"[WS] Received remote answer for meeting audio"})}); } catch {}
     await pc.setRemoteDescription(answer);
+    console.log("[WS] Set remote description");
+    try { fetch("/streamer/client_log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:"[WS] Set remote description"})}); } catch {}
   }
 
   // Kick it off (adjust timing as you like)

@@ -755,7 +755,7 @@ class WebBotAdapter(BotAdapter):
                 if self.left_meeting or self.cleaned_up:
                     break
 
-                response = requests.post(f"http://{self.streaming_service_hostname()}:8000/keepalive", json={})
+                response = requests.post(f"http://{self.streaming_service_hostname()}:8001/keepalive", json={})
                 logger.info(f"Webpage streamer keepalive response: {response.status_code}")
 
             except Exception as e:
@@ -766,7 +766,7 @@ class WebBotAdapter(BotAdapter):
 
     def send_webpage_streamer_shutdown_request(self):
         try:
-            response = requests.post(f"http://{self.streaming_service_hostname()}:8000/shutdown", json={})
+            response = requests.post(f"http://{self.streaming_service_hostname()}:8001/shutdown", json={})
             logger.info(f"Webpage streamer shutdown response: {response.json()}")
         except Exception as e:
             logger.info(f"Webpage streamer shutdown response: {e}")
@@ -815,11 +815,11 @@ class WebBotAdapter(BotAdapter):
             logger.error(f"Error getting peer connection offer: {peerConnectionOffer.get('error')}, returning")
             return
 
-        offer_response = requests.post(f"http://{self.streaming_service_hostname()}:8000/offer", json={"sdp": peerConnectionOffer["sdp"], "type": peerConnectionOffer["type"]})
+        offer_response = requests.post(f"http://{self.streaming_service_hostname()}:8001/offer", json={"sdp": peerConnectionOffer["sdp"], "type": peerConnectionOffer["type"]})
         logger.info(f"Offer response: {offer_response.json()}")
         self.driver.execute_script(f"window.botOutputManager.startBotOutputPeerConnection({json.dumps(offer_response.json())});")
 
-        start_streaming_response = requests.post(f"http://{self.streaming_service_hostname()}:8000/start_streaming", json={"url": self.voice_agent_url})
+        start_streaming_response = requests.post(f"http://{self.streaming_service_hostname()}:8001/start_streaming", json={"url": self.voice_agent_url})
         logger.info(f"Start streaming response: {start_streaming_response}")
 
         if start_streaming_response.status_code != 200:

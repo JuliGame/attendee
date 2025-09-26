@@ -154,7 +154,8 @@ class WebpageStreamer:
         # Add the combined script to execute on new document
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": combined_code})
 
-        self.load_webapp()
+        # Start the web server to handle WebRTC connections
+        self.start_web_server()
 
     async def keepalive_monitor(self):
         """Monitor keepalive status and shutdown if no keepalive received in the last 15 minutes."""
@@ -187,7 +188,9 @@ class WebpageStreamer:
         finally:
             sys.exit(0)
 
-    def load_webapp(self):
+    def start_web_server(self):
+        """Start the aiohttp web server."""
+        logger.info("Starting web server setup...")
         pcs = set()
 
         # ADD THESE TWO LINES
@@ -202,12 +205,15 @@ class WebpageStreamer:
             Return an SDP answer that *sends* the upstream audio (if present)
             to this new peer connection (listen-only client).
             """
+            logger.info("/offer_meeting_audio: received request")
             params = await req.json()
+            logger.info(f"/offer_meeting_audio: parsed JSON keys={list(params.keys())}")
             offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
             # Do we have an upstream audio yet?
             upstream = req.app.get(UPSTREAM_AUDIO_TRACK_KEY)
             if upstream is None:
+                logger.warning("/offer_meeting_audio: upstream audio not yet available; returning 409")
                 return web.Response(status=409, text="No upstream audio has been published yet.")
 
             pc = RTCPeerConnection()
@@ -216,6 +222,7 @@ class WebpageStreamer:
             # Re-broadcast using the relay so multiple listeners are OK
             rebroadcast_track = AUDIO_RELAY.subscribe(upstream)
             pc.addTrack(rebroadcast_track)
+            logger.info("/offer_meeting_audio: added rebroadcast audio track to PC")
 
             @pc.on("connectionstatechange")
             async def _on_state():
@@ -224,8 +231,10 @@ class WebpageStreamer:
                     pcs.discard(pc)
 
             await pc.setRemoteDescription(offer)
+            logger.info("/offer_meeting_audio: setRemoteDescription OK")
             answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
+            logger.info("/offer_meeting_audio: created and set local description (answer)")
             return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
 
         async def offer(req):
@@ -297,6 +306,21 @@ class WebpageStreamer:
 
             return web.json_response({"status": "success"})
 
+        async def client_log(req):
+            """Receive client console logs (from injected webpage payload) and emit to server logs."""
+            try:
+                data = await req.json()
+            except Exception:
+                data = {}
+            message = data.get("message") or ""
+            try:
+                # Avoid extremely long lines
+                msg = message if len(message) < 4000 else (message[:4000] + "…[truncated]")
+            except Exception:
+                msg = str(message)
+            logger.info(f"CLIENT_LOG: {msg}")
+            return web.json_response({"ok": True})
+
         async def keepalive(req):
             """Keepalive endpoint to reset the timeout timer."""
             self.last_keepalive_time = time.time()
@@ -333,6 +357,7 @@ class WebpageStreamer:
         port = 8000
 
         # Build players
+        logger.info(f"Initializing video player with device: {video_device}, format: {video_format}")
         # Video options: set size + fps (many webcams accept these via v4l2)
         v_opts = {
             "video_size": video_size,
@@ -344,16 +369,27 @@ class WebpageStreamer:
             "thread_queue_size": "64",
             "draw_mouse": "0",
         }
-        video_player = MediaPlayer(video_device, format=video_format, options=v_opts)
+        try:
+            video_player = MediaPlayer(video_device, format=video_format, options=v_opts)
+            logger.info("Video player initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize video player: {e}")
+            video_player = None
 
         # Audio player: let aiortc/ffmpeg handle resampling to 48k
+        logger.info(f"Initializing audio player with device: {audio_device}, format: {audio_format}")
         a_opts = {
             "fflags": "nobuffer",
             "probesize": "32",
             "analyzeduration": "0",
             "thread_queue_size": "64",
         }
-        audio_player = MediaPlayer(audio_device, format=audio_format, options=a_opts)
+        try:
+            audio_player = MediaPlayer(audio_device, format=audio_format, options=a_opts)
+            logger.info("Audio player initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize audio player: {e}")
+            audio_player = None
 
         app = web.Application()
         self.web_app = app
@@ -370,11 +406,16 @@ class WebpageStreamer:
         # Add CORS handling for preflight requests
         async def handle_cors_preflight(request):
             """Handle CORS preflight requests"""
+            origin = request.headers.get("Origin", "*")
             return web.Response(
                 headers={
-                    "Access-Control-Allow-Origin": "*",
+                    # Echo origin for PNA compliance ("*" may be rejected)
+                    "Access-Control-Allow-Origin": origin,
                     "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type",
+                    "Access-Control-Allow-Headers": "Content-Type, Access-Control-Allow-Private-Network",
+                    # Private Network Access (PNA) - needed when an https page calls a private http origin
+                    "Access-Control-Allow-Private-Network": "true",
+                    "Vary": "Origin",
                     "Access-Control-Max-Age": "86400",
                 }
             )
@@ -384,11 +425,16 @@ class WebpageStreamer:
         async def add_cors_headers(request, handler):
             """Add CORS headers to all responses"""
             response = await handler(request)
+            origin = request.headers.get("Origin", "*")
             response.headers.update(
                 {
-                    "Access-Control-Allow-Origin": "*",
+                    # Echo origin for PNA compliance
+                    "Access-Control-Allow-Origin": origin,
                     "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type",
+                    "Access-Control-Allow-Headers": "Content-Type, Access-Control-Allow-Private-Network",
+                    # Private Network Access for secure->insecure fetches on local/private networks
+                    "Access-Control-Allow-Private-Network": "true",
+                    "Vary": "Origin",
                 }
             )
             return response
@@ -396,9 +442,11 @@ class WebpageStreamer:
         app.middlewares.append(add_cors_headers)
 
         app.router.add_post("/start_streaming", start_streaming)
+        app.router.add_post("/client_log", client_log)
 
         app.router.add_post("/keepalive", keepalive)
         app.router.add_options("/keepalive", handle_cors_preflight)
+        app.router.add_options("/client_log", handle_cors_preflight)
 
         app.router.add_post("/shutdown", shutdown)
         app.router.add_options("/shutdown", handle_cors_preflight)
@@ -412,4 +460,6 @@ class WebpageStreamer:
         app["video_player"] = video_player
         app["audio_player"] = audio_player
 
+        logger.info(f"Starting web server on port {port}")
         web.run_app(app, host="0.0.0.0", port=port)
+
