@@ -80,6 +80,12 @@ class PerParticipantStreamingAudioInputManager:
         if not self.deepgram_api_key:
             return
 
+        # Debug: Log audio levels for monitoring
+        if len(chunk_bytes) > 0:
+            volume = calculate_normalized_rms(chunk_bytes)
+            if volume > 0.001:  # Only log if there's actual audio
+                logger.debug(f"Received audio chunk for speaker {speaker_id}: {len(chunk_bytes)} bytes, volume: {volume:.4f}")
+
         audio_is_silent = self.silence_detected(chunk_bytes)
 
         if not audio_is_silent:

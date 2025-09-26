@@ -67,6 +67,21 @@ else
   echo "Using external Pulse server at $PULSE_SERVER"
 fi
 
+# Load ALSA loopback kernel module for audio routing
+modprobe snd-aloop || echo "Warning: Could not load snd-aloop kernel module"
+
+# Create a null sink and monitor source for audio routing
+# This creates a virtual audio device that can be used as both input and output
+pactl load-module module-null-sink sink_name=virtual_sink sink_properties="device.description='Virtual_Sink'" || echo "Warning: Could not create virtual sink"
+pactl load-module module-null-sink sink_name=meeting_sink sink_properties="device.description='Meeting_Sink'" || echo "Warning: Could not create meeting sink"
+
+# Create loopback modules to route audio
+pactl load-module module-loopback source=virtual_sink.monitor sink=meeting_sink || echo "Warning: Could not create loopback from virtual to meeting sink"
+
+# Verify that the sinks were created successfully
+echo "Verifying PulseAudio sinks..."
+pactl list short sinks | grep -E "(virtual_sink|meeting_sink)" || echo "Warning: Expected sinks not found"
+
 # Wait for server
 for i in {1..50}; do pactl info >/dev/null 2>&1 && break; sleep 0.1; done
 pactl info >/dev/null || die "pactl cannot reach PulseAudio"

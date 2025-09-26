@@ -784,14 +784,30 @@ class WebBotAdapter(BotAdapter):
             return
 
         offer_response = requests.post(f"http://{self.streaming_service_hostname()}:8000/offer", json={"sdp": peerConnectionOffer["sdp"], "type": peerConnectionOffer["type"]})
-        logger.info(f"Offer response: {offer_response.json()}")
-        self.driver.execute_script(f"window.botOutputManager.startBotOutputPeerConnection({json.dumps(offer_response.json())});")
+
+        if offer_response.status_code != 200:
+            logger.error(f"Failed to send offer to webpage streamer: {offer_response.status_code} - {offer_response.text}")
+            return
+
+        try:
+            offer_response_json = offer_response.json()
+            logger.info(f"Offer response: {offer_response_json}")
+            self.driver.execute_script(f"window.botOutputManager.startBotOutputPeerConnection({json.dumps(offer_response_json)});")
+        except Exception as e:
+            logger.error(f"Failed to parse offer response as JSON: {e}")
+            return
 
         start_streaming_response = requests.post(f"http://{self.streaming_service_hostname()}:8000/start_streaming", json={"url": self.voice_agent_url})
-        logger.info(f"Start streaming response: {start_streaming_response}")
 
         if start_streaming_response.status_code != 200:
-            logger.info(f"Failed to start streaming, not starting webpage streamer keepalive task. Response: {start_streaming_response.status_code}")
+            logger.error(f"Failed to start streaming on webpage streamer: {start_streaming_response.status_code} - {start_streaming_response.text}")
+            return
+
+        try:
+            start_streaming_json = start_streaming_response.json()
+            logger.info(f"Start streaming response: {start_streaming_json}")
+        except Exception as e:
+            logger.error(f"Failed to parse start streaming response as JSON: {e}")
             return
 
         if self.webpage_streamer_keepalive_task is None or not self.webpage_streamer_keepalive_task.is_alive():

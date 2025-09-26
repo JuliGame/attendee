@@ -796,38 +796,76 @@ class BotOutputManager {
         setTimeout(() => this.processAudioQueue(), Math.max(0, timeUntilNextProcess));
     }
 
-    async getBotOutputPeerConnectionOffer() {
-        try
-        {
-            // 2) Create the RTCPeerConnection
-            this.botOutputPeerConnection = new RTCPeerConnection();
+    async getBotOutputPeerConnectionOffer(maxRetries = 30, retryDelay = 1000) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try
+            {
+                console.log(`Attempt ${attempt}/${maxRetries} to get meeting audio stream`);
 
-            // 3) Receive the server's *video* and *audio*
-            const ms = new MediaStream();
-            this.botOutputPeerConnection.ontrack = (ev) => {
-                ms.addTrack(ev.track);
-                // If we've received both video and audio, play the stream
-                if (ms.getVideoTracks().length > 0 && ms.getAudioTracks().length > 0) {
-                    botOutputManager.playMediaStream(ms);
+                // 2) Create the RTCPeerConnection
+                this.botOutputPeerConnection = new RTCPeerConnection();
+
+                // 3) Receive the server's *video* and *audio*
+                const ms = new MediaStream();
+                this.botOutputPeerConnection.ontrack = (ev) => {
+                    ms.addTrack(ev.track);
+                    // If we've received both video and audio, play the stream
+                    if (ms.getVideoTracks().length > 0 && ms.getAudioTracks().length > 0) {
+                        botOutputManager.playMediaStream(ms);
+                    }
+                };
+
+                // We still want to receive the server's video
+                this.botOutputPeerConnection.addTransceiver('video', { direction: 'recvonly' });
+
+                // ❗ Instead of recvonly audio, we now **send** our mic upstream:
+                const meetingAudioStream = window.styleManager.getMeetingAudioStream();
+                if (meetingAudioStream && meetingAudioStream.getAudioTracks().length > 0) {
+                    console.log(`Found meeting audio stream with ${meetingAudioStream.getAudioTracks().length} tracks`);
+                    for (const track of meetingAudioStream.getAudioTracks()) {
+                        this.botOutputPeerConnection.addTrack(track, meetingAudioStream);
+                    }
+
+                    // Create/POST offer → set remote answer
+                    const offer = await this.botOutputPeerConnection.createOffer();
+                    await this.botOutputPeerConnection.setLocalDescription(offer);
+                    console.log(`Successfully created peer connection offer on attempt ${attempt}`);
+                    return { sdp: this.botOutputPeerConnection.localDescription.sdp, type: this.botOutputPeerConnection.localDescription.type };
+                } else {
+                    console.warn(`Attempt ${attempt}: No meeting audio stream available yet (${meetingAudioStream ? 'empty stream' : 'null stream'})`);
+
+                    // Clean up the peer connection before retrying
+                    if (this.botOutputPeerConnection) {
+                        this.botOutputPeerConnection.close();
+                        this.botOutputPeerConnection = null;
+                    }
+
+                    if (attempt < maxRetries) {
+                        console.log(`Waiting ${retryDelay}ms before retry...`);
+                        await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    } else {
+                        throw new Error('No meeting audio stream available after maximum retries');
+                    }
                 }
-            };
-
-            // We still want to receive the server's video
-            this.botOutputPeerConnection.addTransceiver('video', { direction: 'recvonly' });
-
-            // ❗ Instead of recvonly audio, we now **send** our mic upstream:
-            const meetingAudioStream = window.styleManager.getMeetingAudioStream();
-            for (const track of meetingAudioStream.getAudioTracks()) {
-                this.botOutputPeerConnection.addTrack(track, meetingAudioStream);
             }
+            catch (e) {
+                console.error(`Error on attempt ${attempt} creating bot output peer connection offer:`, e);
 
-            // Create/POST offer → set remote answer
-            const offer = await this.botOutputPeerConnection.createOffer();
-            await this.botOutputPeerConnection.setLocalDescription(offer);
-            return { sdp: this.botOutputPeerConnection.localDescription.sdp, type: this.botOutputPeerConnection.localDescription.type };
-        }
-        catch (e) {
-            return { error: e.message };
+                // Clean up the peer connection before retrying
+                if (this.botOutputPeerConnection) {
+                    this.botOutputPeerConnection.close();
+                    this.botOutputPeerConnection = null;
+                }
+
+                if (attempt === maxRetries) {
+                    return { error: e.message };
+                }
+
+                if (attempt < maxRetries) {
+                    console.log(`Waiting ${retryDelay}ms before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                }
+            }
         }
     }
 

@@ -21,27 +21,28 @@ class ScreenAndAudioRecorder:
 
         if self.audio_only:
             # FFmpeg command for audio-only recording to MP3
+            # Use PulseAudio meeting sink monitor to capture meeting audio routed through the streamer
             ffmpeg_cmd = [
                 "ffmpeg",
                 "-y",  # Overwrite output file without asking
                 "-thread_queue_size",
                 "4096",
                 "-f",
-                "alsa",  # Audio input format for Linux
+                "pulse",  # Audio input format for PulseAudio
                 "-i",
-                "default",  # Default audio input device
+                "meeting_sink.monitor",  # Meeting sink monitor source (captures audio routed to meeting_sink)
                 "-c:a",
                 "libmp3lame",  # MP3 codec
                 "-b:a",
                 "192k",  # Audio bitrate (192 kbps for good quality)
                 "-ar",
-                "44100",  # Sample rate
+                "48000",  # Sample rate (match PulseAudio sink)
                 "-ac",
-                "1",  # Mono
+                "2",  # Stereo (match PulseAudio sink)
                 self.file_location,
             ]
         else:
-            ffmpeg_cmd = ["ffmpeg", "-y", "-thread_queue_size", "4096", "-framerate", "30", "-video_size", f"{self.screen_dimensions[0]}x{self.screen_dimensions[1]}", "-f", "x11grab", "-draw_mouse", "0", "-probesize", "32", "-i", display_var, "-thread_queue_size", "4096", "-f", "alsa", "-i", "default", "-vf", f"crop={self.recording_dimensions[0]}:{self.recording_dimensions[1]}:10:10", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "30", "-c:a", "aac", "-strict", "experimental", "-b:a", "128k", self.file_location]
+            ffmpeg_cmd = ["ffmpeg", "-y", "-thread_queue_size", "4096", "-framerate", "30", "-video_size", f"{self.screen_dimensions[0]}x{self.screen_dimensions[1]}", "-f", "x11grab", "-draw_mouse", "0", "-probesize", "32", "-i", display_var, "-thread_queue_size", "4096", "-f", "pulse", "-i", "meeting_sink.monitor", "-vf", f"crop={self.recording_dimensions[0]}:{self.recording_dimensions[1]}:10:10", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "30", "-c:a", "aac", "-strict", "experimental", "-b:a", "128k", "-ar", "48000", "-ac", "2", self.file_location]
 
         logger.info(f"Starting FFmpeg command: {' '.join(ffmpeg_cmd)}")
         self.ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)

@@ -47,26 +47,55 @@ class StyleManager {
 
     addAudioTrack(audioTrack) {
         this.audioTracks.push(audioTrack);
+        this.updateMeetingAudioStream();
+    }
+
+    updateMeetingAudioStream() {
+        if (this.audioTracks.length === 0) {
+            this.meetingAudioStream = null;
+            return;
+        }
+
+        // Create a new destination and connect all audio tracks
+        if (this.audioContext && this.audioContext.state === 'running') {
+            const destination = this.audioContext.createMediaStreamDestination();
+
+            this.audioSources = this.audioTracks.map(track => {
+                const mediaStream = new MediaStream([track]);
+                return this.audioContext.createMediaStreamSource(mediaStream);
+            });
+
+            // Connect all sources to the destination
+            this.audioSources.forEach(source => {
+                source.connect(destination);
+            });
+
+            this.meetingAudioStream = destination.stream;
+            console.log(`Updated meetingAudioStream with ${this.audioTracks.length} tracks`);
+        }
     }
 
     checkAudioActivity() {
         // Get audio data
         this.analyser.getByteTimeDomainData(this.audioDataArray);
-        
-        // Calculate deviation from the center value (128)
-        let sumDeviation = 0;
+
+        // Calculate RMS (Root Mean Square) for better volume representation
+        let sumSquares = 0;
         for (let i = 0; i < this.audioDataArray.length; i++) {
-            // Calculate how much each sample deviates from the center (128)
-            sumDeviation += Math.abs(this.audioDataArray[i] - 128);
+            // Convert from unsigned 8-bit to signed 16-bit range for proper calculation
+            const sample = (this.audioDataArray[i] - 128) / 128.0;
+            sumSquares += sample * sample;
         }
-        
-        const averageDeviation = sumDeviation / this.audioDataArray.length;
-        
-        // If average deviation is above threshold, we have audio activity
-        if (averageDeviation > this.silenceThreshold) {
+
+        const rms = Math.sqrt(sumSquares / this.audioDataArray.length);
+        // Scale to percentage (0-100%) - adjust scaling factor as needed
+        const volumePercent = Math.min(100, rms * 400);
+
+        // If volume is above threshold, we have audio activity
+        if (volumePercent > 1.0) {  // Lower threshold for better sensitivity
             window.ws.sendJson({
                 type: 'SilenceStatus',
-                volume: averageDeviation,
+                volume: volumePercent,
                 isSilent: false
             });
         }
@@ -124,37 +153,29 @@ class StyleManager {
     }
 
     startSilenceDetection() {
-         // Set up audio context and processing as before
-         this.audioContext = new AudioContext();
+        // Set up audio context and processing
+        this.audioContext = new AudioContext();
 
-         this.audioSources = this.audioTracks.map(track => {
-             const mediaStream = new MediaStream([track]);
-             return this.audioContext.createMediaStreamSource(mediaStream);
-         });
- 
-         // Create a destination node
-         const destination = this.audioContext.createMediaStreamDestination();
- 
-         // Connect all sources to the destination
-         this.audioSources.forEach(source => {
-             source.connect(destination);
-         });
- 
-         // Create analyzer and connect it to the destination
-         this.analyser = this.audioContext.createAnalyser();
-         this.analyser.fftSize = 8192;
-         const bufferLength = this.analyser.frequencyBinCount;
-         this.audioDataArray = new Uint8Array(bufferLength);
- 
-         // Create a source from the destination's stream and connect it to the analyzer
-         const mixedSource = this.audioContext.createMediaStreamSource(destination.stream);
-         mixedSource.connect(this.analyser);
- 
-         this.mixedAudioTrack = destination.stream.getAudioTracks()[0];
+        // Initialize the meeting audio stream
+        this.updateMeetingAudioStream();
 
-        // Process and send mixed audio if enabled
-        if (window.initialData.sendMixedAudio && this.mixedAudioTrack) {
-            this.processMixedAudioTrack();
+        // Create analyzer and connect it to the destination if we have a stream
+        if (this.meetingAudioStream) {
+            this.analyser = this.audioContext.createAnalyser();
+            this.analyser.fftSize = 8192;
+            const bufferLength = this.analyser.frequencyBinCount;
+            this.audioDataArray = new Uint8Array(bufferLength);
+
+            // Create a source from the meeting audio stream and connect it to the analyzer
+            const mixedSource = this.audioContext.createMediaStreamSource(this.meetingAudioStream);
+            mixedSource.connect(this.analyser);
+
+            this.mixedAudioTrack = this.meetingAudioStream.getAudioTracks()[0];
+
+            // Process and send mixed audio if enabled
+            if (window.initialData.sendMixedAudio && this.mixedAudioTrack) {
+                this.processMixedAudioTrack();
+            }
         }
 
         // Clear any existing interval
@@ -169,7 +190,7 @@ class StyleManager {
         if (this.neededInteractionsInterval) {
             clearInterval(this.neededInteractionsInterval);
         }
-                
+
         // Check for audio activity every second
         this.silenceCheckInterval = setInterval(() => {
             this.checkAudioActivity();
@@ -184,8 +205,6 @@ class StyleManager {
         this.neededInteractionsInterval = setInterval(() => {
             this.checkNeededInteractions();
         }, 5000);
-
-        this.meetingAudioStream = destination.stream;
     }
 
     getMeetingAudioStream() {
@@ -2445,38 +2464,76 @@ class BotOutputManager {
         setTimeout(() => this.processAudioQueue(), Math.max(0, timeUntilNextProcess));
     }
 
-    async getBotOutputPeerConnectionOffer() {
-        try
-        {
-            // 2) Create the RTCPeerConnection
-            this.botOutputPeerConnection = new RTCPeerConnection();
-        
-            // 3) Receive the server's *video* and *audio*
-            const ms = new MediaStream();
-            this.botOutputPeerConnection.ontrack = (ev) => {
-                ms.addTrack(ev.track);
-                // If we've received both video and audio, play the stream
-                if (ms.getVideoTracks().length > 0 && ms.getAudioTracks().length > 0) {
-                    botOutputManager.playMediaStream(ms);
+    async getBotOutputPeerConnectionOffer(maxRetries = 30, retryDelay = 1000) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try
+            {
+                console.log(`Attempt ${attempt}/${maxRetries} to get meeting audio stream`);
+
+                // 2) Create the RTCPeerConnection
+                this.botOutputPeerConnection = new RTCPeerConnection();
+
+                // 3) Receive the server's *video* and *audio*
+                const ms = new MediaStream();
+                this.botOutputPeerConnection.ontrack = (ev) => {
+                    ms.addTrack(ev.track);
+                    // If we've received both video and audio, play the stream
+                    if (ms.getVideoTracks().length > 0 && ms.getAudioTracks().length > 0) {
+                        botOutputManager.playMediaStream(ms);
+                    }
+                };
+
+                // We still want to receive the server's video
+                this.botOutputPeerConnection.addTransceiver('video', { direction: 'recvonly' });
+
+                // ❗ Instead of recvonly audio, we now **send** our mic upstream:
+                const meetingAudioStream = window.styleManager.getMeetingAudioStream();
+                if (meetingAudioStream && meetingAudioStream.getAudioTracks().length > 0) {
+                    console.log(`Found meeting audio stream with ${meetingAudioStream.getAudioTracks().length} tracks`);
+                    for (const track of meetingAudioStream.getAudioTracks()) {
+                        this.botOutputPeerConnection.addTrack(track, meetingAudioStream);
+                    }
+
+                    // Create/POST offer → set remote answer
+                    const offer = await this.botOutputPeerConnection.createOffer();
+                    await this.botOutputPeerConnection.setLocalDescription(offer);
+                    console.log(`Successfully created peer connection offer on attempt ${attempt}`);
+                    return { sdp: this.botOutputPeerConnection.localDescription.sdp, type: this.botOutputPeerConnection.localDescription.type };
+                } else {
+                    console.warn(`Attempt ${attempt}: No meeting audio stream available yet (${meetingAudioStream ? 'empty stream' : 'null stream'})`);
+
+                    // Clean up the peer connection before retrying
+                    if (this.botOutputPeerConnection) {
+                        this.botOutputPeerConnection.close();
+                        this.botOutputPeerConnection = null;
+                    }
+
+                    if (attempt < maxRetries) {
+                        console.log(`Waiting ${retryDelay}ms before retry...`);
+                        await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    } else {
+                        throw new Error('No meeting audio stream available after maximum retries');
+                    }
                 }
-            };
-        
-            // We still want to receive the server's video
-            this.botOutputPeerConnection.addTransceiver('video', { direction: 'recvonly' });
-        
-            // ❗ Instead of recvonly audio, we now **send** our mic upstream:
-            const meetingAudioStream = window.styleManager.getMeetingAudioStream();
-            for (const track of meetingAudioStream.getAudioTracks()) {
-                this.botOutputPeerConnection.addTrack(track, meetingAudioStream);
             }
-        
-            // Create/POST offer → set remote answer
-            const offer = await this.botOutputPeerConnection.createOffer();
-            await this.botOutputPeerConnection.setLocalDescription(offer);
-            return { sdp: this.botOutputPeerConnection.localDescription.sdp, type: this.botOutputPeerConnection.localDescription.type };
-        }
-        catch (e) {
-            return { error: e.message };
+            catch (e) {
+                console.error(`Error on attempt ${attempt} creating bot output peer connection offer:`, e);
+
+                // Clean up the peer connection before retrying
+                if (this.botOutputPeerConnection) {
+                    this.botOutputPeerConnection.close();
+                    this.botOutputPeerConnection = null;
+                }
+
+                if (attempt === maxRetries) {
+                    return { error: e.message };
+                }
+
+                if (attempt < maxRetries) {
+                    console.log(`Waiting ${retryDelay}ms before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                }
+            }
         }
     }
 

@@ -46,42 +46,112 @@ def audioframe_to_s16le_bytes(frame: AudioFrame, target_channels=2):
     return interleaved
 
 
-class AlsaLoopbackSink:
+class PulseAudioSink:
     """
-    Writes 48k s16le stereo PCM to ALSA loopback using ffmpeg.
-    Target device: hw:Loopback,0,0 (provided by snd-aloop).
+    Writes 48k s16le stereo PCM to PulseAudio sink using ffmpeg.
+    Target sink: meeting_sink (created in entrypoint.sh).
     """
 
-    def __init__(self, device="hw:Loopback,0,0", sample_rate=48000, channels=2):
-        self.device = device
+    def __init__(self, sink_name="meeting_sink", sample_rate=48000, channels=2):
+        self.sink_name = sink_name
         self.sample_rate = sample_rate
         self.channels = channels
         self._proc = None
         self._stdin = None
         self._task = None
         self._stopped = asyncio.Event()
+        self._write_count = 0
 
     def start(self):
-        # Build ffmpeg proc: raw s16le → ALSA device
-        pass
+        """Start the FFmpeg process to write to PulseAudio sink"""
+        import subprocess
+
+        # Build ffmpeg command: raw s16le PCM → PulseAudio sink
+        cmd = [
+            "ffmpeg",
+            "-y",  # Overwrite output file without asking
+            "-f", "s16le",  # Input format: signed 16-bit little-endian PCM
+            "-ar", str(self.sample_rate),  # Sample rate
+            "-ac", str(self.channels),  # Channels
+            "-i", "pipe:0",  # Read from stdin
+            "-f", "pulse",  # Output format: PulseAudio
+            "-ar", str(self.sample_rate),  # Sample rate
+            "-ac", str(self.channels),  # Channels
+            self.sink_name  # PulseAudio sink device name (e.g., "virtual_sink")
+        ]
+
+        logger.info(f"Starting PulseAudio sink with command: {' '.join(cmd)}")
+
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            self._stdin = self._proc.stdin
+            logger.info(f"PulseAudio sink started successfully for sink {self.sink_name}")
+        except Exception as e:
+            logger.error(f"Failed to start PulseAudio sink: {e}")
+            self._proc = None
+            self._stdin = None
 
     def write(self, pcm_bytes: bytes):
-        # Calculate volume (RMS) of the PCM data
-        if len(pcm_bytes) > 0:
-            # Convert bytes back to int16 array for volume calculation
-            pcm_array = np.frombuffer(pcm_bytes, dtype=np.int16)
-            # Calculate RMS (Root Mean Square) for volume
-            rms = np.sqrt(np.mean(pcm_array.astype(np.float32) ** 2))
-            # Normalize to 0-100 scale (int16 max is 32767)
-            volume_percent = (rms / 32767.0) * 100
-            print(f"PCM volume: {volume_percent:.2f}% (RMS: {rms:.1f})")
-        else:
-            print("Empty PCM data")
+        """Write PCM data to the PulseAudio sink"""
+        if self._stdin is None or self._proc is None:
+            logger.warning("PulseAudio sink not started or stdin not available")
+            return
 
-        print(f"PCM bytes length: {len(pcm_bytes)}")
+        try:
+            # Calculate volume (RMS) of the PCM data for debugging
+            if len(pcm_bytes) > 0:
+                # Convert bytes back to int16 array for volume calculation
+                pcm_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+                # Calculate RMS (Root Mean Square) for volume
+                rms = np.sqrt(np.mean(pcm_array.astype(np.float32) ** 2))
+                # Normalize to 0-100 scale (int16 max is 32767)
+                volume_percent = (rms / 32767.0) * 100
+                logger.debug(f"Writing {len(pcm_bytes)} bytes to PulseAudio sink, volume: {volume_percent}% (RMS: {rms:.1f})")
+            else:
+                logger.debug("Writing empty PCM data to PulseAudio sink")
+
+            # Write the PCM data to FFmpeg's stdin
+            self._stdin.write(pcm_bytes)
+            self._stdin.flush()
+
+            # Log audio activity periodically
+            self._write_count += 1
+            if self._write_count % 50 == 0:  # Log every 50 writes
+                logger.info(f"PulseAudio sink has processed {self._write_count} audio chunks")
+        except Exception as e:
+            logger.error(f"Error writing to PulseAudio sink: {e}")
 
     async def stop(self):
-        pass
+        """Stop the PulseAudio sink"""
+        if self._stdin:
+            try:
+                self._stdin.close()
+            except Exception:
+                pass
+            self._stdin = None
+
+        if self._proc:
+            try:
+                self._proc.terminate()
+                # Wait a bit for graceful termination
+                await asyncio.sleep(0.1)
+                if self._proc.poll() is None:
+                    self._proc.kill()
+                self._proc.wait()
+            except Exception as e:
+                logger.error(f"Error stopping PulseAudio sink: {e}")
+            self._proc = None
+
+        logger.info("PulseAudio sink stopped")
+
+
+# For backwards compatibility
+AlsaLoopbackSink = PulseAudioSink
 
 
 class WebpageStreamer:
@@ -262,9 +332,9 @@ class WebpageStreamer:
                 except Exception:
                     pass
 
-            # --- NEW: receive client's mic and feed to ALSA loopback ---
-            # loopback_sink = AlsaLoopbackSink(device="hw:Loopback,0,0", sample_rate=48000, channels=2)
-            # loopback_sink.start()
+            # --- NEW: receive client's mic and feed to PulseAudio sink ---
+            loopback_sink = PulseAudioSink(sink_name="meeting_sink", sample_rate=48000, channels=2)
+            loopback_sink.start()
 
             @pc.on("track")
             def on_track(track):
@@ -273,13 +343,54 @@ class WebpageStreamer:
                     req.app[UPSTREAM_AUDIO_TRACK_KEY] = track
                     logger.info("Upstream audio track set for rebroadcast.")
 
+                    # Route audio to PulseAudio sink for bot microphone input
+                    @track.on("ended")
+                    async def on_ended():
+                        await loopback_sink.stop()
+
+                    async def audio_data_handler():
+                        logger.info("Starting audio data handler for meeting audio routing")
+                        frame_count = 0
+                        while True:
+                            try:
+                                frame = await track.recv()
+                                if frame:
+                                    frame_count += 1
+                                    # Convert frame to PCM bytes and write to PulseAudio sink
+                                    audio_bytes = audioframe_to_s16le_bytes(frame)
+                                    loopback_sink.write(audio_bytes)
+
+                                    # Log every 100 frames to avoid spam
+                                    if frame_count % 100 == 0:
+                                        logger.info(f"Processed {frame_count} audio frames for meeting audio routing")
+                            except Exception as e:
+                                logger.error(f"Error processing audio frame: {e}")
+                                break
+
+                    # Start audio data handler task
+                    asyncio.create_task(audio_data_handler())
+
+                    # Also add a simple audio level monitor
+                    async def audio_level_monitor():
+                        while True:
+                            try:
+                                await asyncio.sleep(1)  # Check every second
+                                # This will help verify audio is flowing
+                                if loopback_sink._proc and loopback_sink._proc.poll() is None:
+                                    logger.debug("Audio sink is active and processing")
+                            except Exception as e:
+                                break
+
+                    # Start the monitor task
+                    asyncio.create_task(audio_level_monitor())
+
             @pc.on("connectionstatechange")
             async def _on_state():
                 if pc.connectionState in ("failed", "closed", "disconnected"):
                     await pc.close()
                     pcs.discard(pc)
-                    pass
-                    # await loopback_sink.stop()
+                    # Stop the PulseAudio sink when connection closes
+                    await loopback_sink.stop()
 
             await pc.setRemoteDescription(offer)
             answer = await pc.createAnswer()
