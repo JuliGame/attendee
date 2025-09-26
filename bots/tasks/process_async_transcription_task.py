@@ -14,6 +14,7 @@ def create_utterances_for_transcription(async_transcription):
 
     # Get all the audio chunks for the recording
     # then create utterances for each audio chunk
+    utterance_task_delay_seconds = 0
     for audio_chunk in recording.audio_chunks.all():
         utterance = Utterance.objects.create(
             source=Utterance.Sources.PER_PARTICIPANT_AUDIO,
@@ -25,7 +26,9 @@ def create_utterances_for_transcription(async_transcription):
             duration_ms=audio_chunk.duration_ms,
         )
 
-        process_utterance.delay(utterance.id)
+        # Spread out the utterance tasks a bit
+        process_utterance.apply_async(args=[utterance.id], countdown=utterance_task_delay_seconds)
+        utterance_task_delay_seconds += 1
 
     # After the utterances have been created and queued for transcription, set the recording artifact to in progress
     AsyncTranscriptionManager.set_async_transcription_in_progress(async_transcription)
@@ -47,8 +50,9 @@ def terminate_transcription(async_transcription):
 def check_for_transcription_completion(async_transcription):
     in_progress_utterances = async_transcription.utterances.filter(transcription__isnull=True, failure_data__isnull=True)
 
-    # If no in progress utterances exist or it's been more than 30 minutes, then we need to terminate the transcription
-    if not in_progress_utterances.exists() or timezone.now() - async_transcription.started_at > timezone.timedelta(minutes=30):
+    # If no in progress utterances exist or it's been more than max_runtime_seconds, then we need to terminate the transcription
+    max_runtime_seconds = max(1800, async_transcription.utterances.count() * 3)
+    if not in_progress_utterances.exists() or timezone.now() - async_transcription.started_at > timezone.timedelta(seconds=max_runtime_seconds):
         logger.info(f"Terminating transcription for recording artifact {async_transcription.id} because no in progress utterances exist or it's been more than 30 minutes")
         terminate_transcription(async_transcription)
         return

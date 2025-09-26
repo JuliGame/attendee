@@ -320,7 +320,7 @@ class TestGoogleMeetBot(TransactionTestCase):
         connection.close()
 
         # Now test creating an async transcription
-        async_transcription = AsyncTranscription.objects.create(recording=self.recording)
+        async_transcription = AsyncTranscription.objects.create(recording=self.recording, settings={"transcription_settings": {"deepgram": {}}})
         self.assertEqual(async_transcription.state, AsyncTranscriptionStates.NOT_STARTED)
 
         process_async_transcription.delay(async_transcription.id)
@@ -352,7 +352,7 @@ class TestGoogleMeetBot(TransactionTestCase):
 
         # Now delete the deepgram credentials to simulate transcription failure
         self.deepgram_credentials.delete()
-        async_transcription_after_credentials_deleted = AsyncTranscription.objects.create(recording=self.recording)
+        async_transcription_after_credentials_deleted = AsyncTranscription.objects.create(recording=self.recording, settings={"transcription_settings": {"deepgram": {}}})
 
         process_async_transcription.delay(async_transcription_after_credentials_deleted.id)
 

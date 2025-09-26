@@ -76,18 +76,27 @@ class BotController:
     UTTERANCE_TERMINATION_WAIT_TIME_SECONDS = 300
 
     def per_participant_audio_input_manager(self):
-        if self.bot_in_db.deepgram_use_streaming():
+        if self.bot_in_db.transcription_settings.deepgram_use_streaming():
             return self.per_participant_streaming_audio_input_manager
         else:
             return self.per_participant_non_streaming_audio_input_manager
 
+    def save_utterances_for_individual_audio_chunks(self):
+        return self.get_recording_transcription_provider() != TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM
+
+    def save_utterances_for_closed_captions(self):
+        return self.get_recording_transcription_provider() == TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM
+
+    def should_capture_audio_chunks(self):
+        return self.save_utterances_for_individual_audio_chunks() or self.bot_in_db.record_async_transcription_audio_chunks()
+
     def get_google_meet_bot_adapter(self):
         from bots.google_meet_bot_adapter import GoogleMeetBotAdapter
 
-        if self.get_recording_transcription_provider() == TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM:
-            add_audio_chunk_callback = None
-        else:
+        if self.should_capture_audio_chunks():
             add_audio_chunk_callback = self.per_participant_audio_input_manager().add_chunk
+        else:
+            add_audio_chunk_callback = None
 
         return GoogleMeetBotAdapter(
             display_name=self.bot_in_db.name,
@@ -99,13 +108,13 @@ class BotController:
             add_video_frame_callback=None,
             wants_any_video_frames_callback=None,
             add_mixed_audio_chunk_callback=self.add_mixed_audio_chunk_callback if self.pipeline_configuration.websocket_stream_audio else None,
-            upsert_caption_callback=self.closed_caption_manager.upsert_caption,
+            upsert_caption_callback=self.closed_caption_manager.upsert_caption if self.save_utterances_for_closed_captions() else None,
             upsert_chat_message_callback=self.on_new_chat_message,
             add_participant_event_callback=self.add_participant_event,
             automatic_leave_configuration=self.automatic_leave_configuration,
             add_encoded_mp4_chunk_callback=None,
             recording_view=self.bot_in_db.recording_view(),
-            google_meet_closed_captions_language=self.bot_in_db.google_meet_closed_captions_language(),
+            google_meet_closed_captions_language=self.bot_in_db.transcription_settings.google_meet_closed_captions_language(),
             should_create_debug_recording=self.bot_in_db.create_debug_recording(),
             start_recording_screen_callback=self.screen_and_audio_recorder.start_recording if self.screen_and_audio_recorder else None,
             stop_recording_screen_callback=self.screen_and_audio_recorder.stop_recording if self.screen_and_audio_recorder else None,
@@ -116,10 +125,11 @@ class BotController:
     def get_teams_bot_adapter(self):
         from bots.teams_bot_adapter import TeamsBotAdapter
 
-        if self.get_recording_transcription_provider() == TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM:
-            add_audio_chunk_callback = None
-        else:
+        if self.should_capture_audio_chunks():
             add_audio_chunk_callback = self.per_participant_audio_input_manager().add_chunk
+        else:
+            add_audio_chunk_callback = None
+
         teams_bot_login_credentials = self.bot_in_db.project.credentials.filter(credential_type=Credentials.CredentialTypes.TEAMS_BOT_LOGIN).first()
 
         return TeamsBotAdapter(
@@ -132,13 +142,13 @@ class BotController:
             add_video_frame_callback=None,
             wants_any_video_frames_callback=None,
             add_mixed_audio_chunk_callback=self.add_mixed_audio_chunk_callback if self.pipeline_configuration.websocket_stream_audio else None,
-            upsert_caption_callback=self.closed_caption_manager.upsert_caption,
+            upsert_caption_callback=self.closed_caption_manager.upsert_caption if self.save_utterances_for_closed_captions() else None,
             upsert_chat_message_callback=self.on_new_chat_message,
             add_participant_event_callback=self.add_participant_event,
             automatic_leave_configuration=self.automatic_leave_configuration,
             add_encoded_mp4_chunk_callback=None,
             recording_view=self.bot_in_db.recording_view(),
-            teams_closed_captions_language=self.bot_in_db.teams_closed_captions_language(),
+            teams_closed_captions_language=self.bot_in_db.transcription_settings.teams_closed_captions_language(),
             should_create_debug_recording=self.bot_in_db.create_debug_recording(),
             start_recording_screen_callback=self.screen_and_audio_recorder.start_recording if self.screen_and_audio_recorder else None,
             stop_recording_screen_callback=self.screen_and_audio_recorder.stop_recording if self.screen_and_audio_recorder else None,
@@ -163,6 +173,10 @@ class BotController:
 
         zoom_oauth_credentials = self.get_zoom_oauth_credentials()
 
+        zoom_tokens = {}
+        if self.bot_in_db.zoom_tokens_callback_url():
+            zoom_tokens = get_zoom_tokens(self.bot_in_db)
+
         return ZoomWebBotAdapter(
             display_name=self.bot_in_db.name,
             send_message_callback=self.on_message_from_adapter,
@@ -173,7 +187,7 @@ class BotController:
             add_video_frame_callback=None,
             wants_any_video_frames_callback=None,
             add_mixed_audio_chunk_callback=self.add_mixed_audio_chunk_callback if self.pipeline_configuration.websocket_stream_audio else None,
-            upsert_caption_callback=self.closed_caption_manager.upsert_caption,
+            upsert_caption_callback=self.closed_caption_manager.upsert_caption if self.save_utterances_for_closed_captions() else None,
             upsert_chat_message_callback=self.on_new_chat_message,
             add_participant_event_callback=self.add_participant_event,
             automatic_leave_configuration=self.automatic_leave_configuration,
@@ -185,9 +199,10 @@ class BotController:
             video_frame_size=self.bot_in_db.recording_dimensions(),
             zoom_client_id=zoom_oauth_credentials["client_id"],
             zoom_client_secret=zoom_oauth_credentials["client_secret"],
-            zoom_closed_captions_language=self.bot_in_db.zoom_closed_captions_language(),
+            zoom_closed_captions_language=self.bot_in_db.transcription_settings.zoom_closed_captions_language(),
             should_ask_for_recording_permission=self.pipeline_configuration.record_audio or self.pipeline_configuration.rtmp_stream_audio or self.pipeline_configuration.websocket_stream_audio or self.pipeline_configuration.record_video or self.pipeline_configuration.rtmp_stream_video,
             record_chat_messages_when_paused=self.bot_in_db.record_chat_messages_when_paused(),
+            zoom_tokens=zoom_tokens,
         )
 
     def get_zoom_bot_adapter(self):
@@ -603,7 +618,7 @@ class BotController:
         # Only used for adapters that can provide per-participant audio
 
         self.per_participant_non_streaming_audio_input_manager = PerParticipantNonStreamingAudioInputManager(
-            save_utterance_callback=self.save_individual_audio_utterance,
+            save_audio_chunk_callback=self.process_individual_audio_chunk,
             get_participant_callback=self.get_participant,
             sample_rate=self.get_per_participant_audio_sample_rate(),
             utterance_size_limit=self.non_streaming_audio_utterance_size_limit(),
@@ -611,7 +626,6 @@ class BotController:
         )
 
         self.per_participant_streaming_audio_input_manager = PerParticipantStreamingAudioInputManager(
-            save_utterance_callback=self.save_individual_audio_utterance,
             get_participant_callback=self.get_participant,
             sample_rate=self.get_per_participant_audio_sample_rate(),
             transcription_provider=self.get_recording_transcription_provider(),
@@ -619,7 +633,7 @@ class BotController:
         )
 
         # Only used for adapters that can provide closed captions
-        if self.bot_in_db.meeting_closed_captions_merge_consecutive_captions():
+        if self.bot_in_db.transcription_settings.meeting_closed_captions_merge_consecutive_captions():
             self.closed_caption_manager = GroupedClosedCaptionManager(
                 save_utterance_callback=self.save_closed_caption_utterance,
                 get_participant_callback=self.get_participant,
@@ -1064,10 +1078,10 @@ class BotController:
 
         RecordingManager.set_recording_transcription_in_progress(recording_in_progress)
 
-    def save_individual_audio_utterance(self, message):
+    def process_individual_audio_chunk(self, message):
         from bots.tasks.process_utterance_task import process_utterance
 
-        logger.info("Received message that new utterance was detected")
+        logger.info("Received message that new individual audio chunk was detected")
 
         # Create participant record if it doesn't exist
         participant, _ = Participant.objects.get_or_create(
@@ -1081,7 +1095,6 @@ class BotController:
             },
         )
 
-        # Create new utterance record
         recording_in_progress = self.get_recording_in_progress()
         if recording_in_progress is None:
             logger.warning("Warning: No recording in progress found so cannot save individual audio utterance.")
@@ -1098,6 +1111,10 @@ class BotController:
             participant=participant,
         )
 
+        if not self.save_utterances_for_individual_audio_chunks():
+            return
+
+        # Create new utterance record
         utterance = Utterance.objects.create(
             source=Utterance.Sources.PER_PARTICIPANT_AUDIO,
             async_transcription=None,  # This utterance is created during the meeting, so it's not associated with an async transcription

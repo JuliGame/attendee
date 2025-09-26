@@ -104,8 +104,8 @@ class ApiObjectAccessIntegrationTest(TransactionTestCase):
         self.async_transcription_b = AsyncTranscription.objects.create(recording=self.recording_b, state=AsyncTranscriptionStates.COMPLETE)
 
         # Create ended bots for POST transcript testing (these need to be in ENDED state for async transcription creation)
-        self.ended_bot_a = Bot.objects.create(project=self.project_a, name="Ended Bot A", meeting_url="https://zoom.us/j/1111111111", state=BotStates.ENDED)
-        self.ended_bot_b = Bot.objects.create(project=self.project_b, name="Ended Bot B", meeting_url="https://zoom.us/j/2222222222", state=BotStates.ENDED)
+        self.ended_bot_a = Bot.objects.create(project=self.project_a, name="Ended Bot A", meeting_url="https://zoom.us/j/1111111111", state=BotStates.ENDED, settings={"recording_settings": {"record_async_transcription_audio_chunks": True}})
+        self.ended_bot_b = Bot.objects.create(project=self.project_b, name="Ended Bot B", meeting_url="https://zoom.us/j/2222222222", state=BotStates.ENDED, settings={"recording_settings": {"record_async_transcription_audio_chunks": True}})
 
         # Create recordings for ended bots
         self.ended_recording_a = Recording.objects.create(bot=self.ended_bot_a, recording_type=RecordingTypes.AUDIO_AND_VIDEO, transcription_type=TranscriptionTypes.NON_REALTIME, is_default_recording=True, state=RecordingStates.COMPLETE)
@@ -243,7 +243,8 @@ class ApiObjectAccessIntegrationTest(TransactionTestCase):
     def test_transcript_create_async_transcription_access_control(self):
         """Test that async transcription creation (POST /api/bots/<object_id>/transcript) respects project boundaries"""
         # API key A can create async transcription for bot A
-        response = self._make_authenticated_request("POST", f"/api/v1/bots/{self.ended_bot_a.object_id}/transcript", self.api_key_a_plain, "{}")
+        transcription_settings_json = json.dumps({"transcription_settings": {"deepgram": {"language": "en-US", "model": "nova-3"}}})
+        response = self._make_authenticated_request("POST", f"/api/v1/bots/{self.ended_bot_a.object_id}/transcript", self.api_key_a_plain, transcription_settings_json)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         response_data = response.json()
         self.assertIn("id", response_data)
@@ -251,12 +252,12 @@ class ApiObjectAccessIntegrationTest(TransactionTestCase):
         self.assertEqual(response_data["state"], "not_started")
 
         # API key A cannot create async transcription for bot B (should fail at bot level)
-        response = self._make_authenticated_request("POST", f"/api/v1/bots/{self.ended_bot_b.object_id}/transcript", self.api_key_a_plain, "{}")
+        response = self._make_authenticated_request("POST", f"/api/v1/bots/{self.ended_bot_b.object_id}/transcript", self.api_key_a_plain, transcription_settings_json)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(response.json()["error"], "Bot not found")
 
         # API key B can create async transcription for bot B
-        response = self._make_authenticated_request("POST", f"/api/v1/bots/{self.ended_bot_b.object_id}/transcript", self.api_key_b_plain, "{}")
+        response = self._make_authenticated_request("POST", f"/api/v1/bots/{self.ended_bot_b.object_id}/transcript", self.api_key_b_plain, transcription_settings_json)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         response_data = response.json()
         self.assertIn("id", response_data)
@@ -264,7 +265,7 @@ class ApiObjectAccessIntegrationTest(TransactionTestCase):
         self.assertEqual(response_data["state"], "not_started")
 
         # API key B cannot create async transcription for bot A (should fail at bot level)
-        response = self._make_authenticated_request("POST", f"/api/v1/bots/{self.ended_bot_a.object_id}/transcript", self.api_key_b_plain, "{}")
+        response = self._make_authenticated_request("POST", f"/api/v1/bots/{self.ended_bot_a.object_id}/transcript", self.api_key_b_plain, transcription_settings_json)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(response.json()["error"], "Bot not found")
 

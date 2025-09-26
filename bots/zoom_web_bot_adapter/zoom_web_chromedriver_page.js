@@ -3,18 +3,17 @@ ZoomMtg.prepareWebSDK()
 
 var zoomInitialData = window.zoomInitialData;
 
-var authEndpoint = ''
+var authEndpoint = '';
 var sdkKey = zoomInitialData.sdkKey;
 var meetingNumber = zoomInitialData.meetingNumber;
 var passWord = zoomInitialData.meetingPassword;
-var role = 0
+var role = 0;
 var userName = initialData.botName;
-var userEmail = ''
-var registrantToken = ''
-var zakToken = ''
-var leaveUrl = 'https://zoom.us'
-var registrantToken = ''
-var zakToken = ''
+var userEmail = '';
+var registrantToken = '';
+var recordingToken = zoomInitialData.joinToken || zoomInitialData.appPrivilegeToken;
+var zakToken = zoomInitialData.zakToken;
+var leaveUrl = 'https://zoom.us';
 var userEnteredMeeting = false;
 
 class TranscriptMessageFinalizationManager {
@@ -105,6 +104,7 @@ function startMeeting(signature) {
             userName: userName,
             userEmail: userEmail,
             tk: registrantToken,
+            recordingToken: recordingToken,
             zak: zakToken,
             success: (success) => {
                 console.log('join success');
@@ -295,14 +295,13 @@ function startMeeting(signature) {
         {
             ZoomMtg.mediaCapture({record: "start", success: (success) => {
                 console.log('mediaCapture success', success);
+                window.ws.sendJson({
+                    type: 'RecordingPermissionChange',
+                    change: 'granted'
+                });
             }, error: (error) => {
                 console.log('mediaCapture error', error);
             }});
-
-            window.ws.sendJson({
-                type: 'RecordingPermissionChange',
-                change: 'granted'
-            });
         }
 
         if (permissionChange.allow === false)
@@ -346,12 +345,26 @@ function sendChatMessage(text) {
 window.sendChatMessage = sendChatMessage;
 
 function askForMediaCapturePermission() {
-    // Ask for media capture permission
-    ZoomMtg.mediaCapturePermission({operate: "request", success: (success) => {
-        console.log('mediaCapturePermission success', success);
-    }, error: (error) => {
-        console.log('mediaCapturePermission error', error);
-    }});
+    // We need to wait a second to ask for permission because of this issue:
+    // https://devforum.zoom.us/t/error-in-mediacapturepermission-api-typeerror-cannot-read-properties-of-undefined-reading-caps/96683/6
+    setTimeout(() => {
+        // Attempt to start capture
+        ZoomMtg.mediaCapture({record: "start", success: (success) => {
+            // If it succeeds, great, we're done.
+            window.ws.sendJson({
+                type: 'RecordingPermissionChange',
+                change: 'granted'
+            });
+
+        }, error: (error) => {
+            // If it fails, we need to ask for permission
+            ZoomMtg.mediaCapturePermission({operate: "request", success: (success) => {
+                console.log('mediaCapturePermission success', success);
+            }, error: (error) => {
+                console.log('mediaCapturePermission error', error);
+            }});
+        }});
+    }, 1000);
 }
 
 window.askForMediaCapturePermission = askForMediaCapturePermission;

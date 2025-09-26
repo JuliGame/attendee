@@ -47,6 +47,7 @@ from .serializers import (
     BotImageSerializer,
     BotSerializer,
     ChatMessageSerializer,
+    CreateAsyncTranscriptionSerializer,
     CreateBotSerializer,
     ParticipantEventSerializer,
     ParticipantSerializer,
@@ -785,6 +786,7 @@ class TranscriptView(APIView):
                     "speaker_name": utterance.participant.full_name,
                     "speaker_uuid": utterance.participant.uuid,
                     "speaker_user_uuid": utterance.participant.user_uuid,
+                    "speaker_is_host": utterance.participant.is_host,
                     "timestamp_ms": utterance.timestamp_ms,
                     "duration_ms": utterance.duration_ms,
                     "transcription": utterance.transcription,
@@ -808,6 +810,14 @@ class TranscriptView(APIView):
             if not bot.project.organization.is_async_transcription_enabled:
                 return Response({"error": "Async transcription is not enabled for your account."}, status=status.HTTP_400_BAD_REQUEST)
 
+            meeting_type = meeting_type_from_url(bot.meeting_url)
+            if meeting_type == MeetingTypes.ZOOM:
+                if bot.use_zoom_web_adapter():
+                    return Response({"error": "This feature is not supported for Zoom when using the web SDK."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not bot.record_async_transcription_audio_chunks():
+                return Response({"error": "Cannot generate async transcription because you did not enable recording_settings.record_async_transcription_audio_chunks when you created the bot."}, status=status.HTTP_400_BAD_REQUEST)
+
             if bot.state != BotStates.ENDED:
                 return Response({"error": "Cannot create async transcription because bot is not in state ended. It is in state " + BotStates.state_to_api_code(bot.state)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -818,8 +828,8 @@ class TranscriptView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            if not recording.audio_chunks.exists():
-                return Response({"error": "Cannot create transcription because the recording audio chunks have been deleted."}, status=status.HTTP_400_BAD_REQUEST)
+            if not recording.audio_chunks.exclude(audio_blob=b"").exists():
+                return Response({"error": "Cannot create async transcription because the per-speaker audio data has been deleted or was never created."}, status=status.HTTP_400_BAD_REQUEST)
 
             existing_async_transcription_count = AsyncTranscription.objects.filter(
                 recording=recording,
@@ -828,7 +838,11 @@ class TranscriptView(APIView):
             if existing_async_transcription_count >= 4:
                 return Response({"error": "You cannot have more than 4 async transcriptions per bot."}, status=status.HTTP_400_BAD_REQUEST)
 
-            async_transcription = AsyncTranscription.objects.create(recording=recording)
+            serializer = CreateAsyncTranscriptionSerializer(data={"transcription_settings": request.data.get("transcription_settings")})
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            async_transcription = AsyncTranscription.objects.create(recording=recording, settings=serializer.validated_data)
 
             # Create celery task to process the async transcription
             process_async_transcription.delay(async_transcription.id)

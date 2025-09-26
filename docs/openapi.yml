@@ -2477,6 +2477,8 @@ components:
         participant_user_uuid:
           type: string
           nullable: true
+        participant_is_host:
+          type: boolean
         event_type:
           type: string
           readOnly: true
@@ -2490,6 +2492,7 @@ components:
       - participant_name
       - participant_user_uuid
       - participant_uuid
+      - participant_is_host
       - timestamp_ms
     PatchedPatchBotRequest:
       type: object
@@ -2588,6 +2591,8 @@ components:
         speaker_user_uuid:
           type: string
           nullable: true
+        speaker_is_host:
+          type: boolean
         timestamp_ms:
           type: integer
         duration_ms:
@@ -2598,6 +2603,7 @@ components:
       - speaker_name
       - speaker_user_uuid
       - speaker_uuid
+      - speaker_is_host
       - timestamp_ms
       - transcription
     TranscriptionStateEnum:
