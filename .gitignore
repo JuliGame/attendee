@@ -93,3 +93,6 @@ local_settings.py
 
 .env
 db.sqlite3
+
+### Audio Recordings ###
+audio_recordings/
