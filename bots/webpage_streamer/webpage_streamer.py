@@ -304,23 +304,10 @@ class WebpageStreamer:
             return web.json_response({"status": "alive", "timestamp": self.last_keepalive_time})
 
         async def shutdown(req):
-            """Reset without exiting the process (safer on bot exit)."""
-            logger.info("Resetting streamer (closing PCs, blanking page) via API endpoint")
-            try:
-                # Close all peer connections
-                for pc in list(pcs):
-                    await pc.close()
-                    pcs.discard(pc)
-                # Clear upstream audio
-                req.app[UPSTREAM_AUDIO_TRACK_KEY] = None
-                # Stop any current playback
-                try:
-                    self.driver.get("about:blank")
-                except Exception as e:
-                    logger.info(f"Error blanking page during reset: {e}")
-            except Exception as e:
-                logger.error(f"Error during reset: {e}")
-            return web.json_response({"status": "reset"})
+            """Shutdown endpoint to gracefully shutdown the process."""
+            logger.info("Shutting down process via API endpoint")
+            await self.shutdown_process()
+            return web.json_response({"status": "success"})
 
         video_size = f"{self.video_frame_size[0]}x{self.video_frame_size[1]}"
         framerate = "15"
