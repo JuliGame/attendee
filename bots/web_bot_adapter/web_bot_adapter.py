@@ -776,6 +776,8 @@ class WebBotAdapter(BotAdapter):
             return
 
         logger.info(f"Start streaming from webpage: {self.voice_agent_url}")
+        asyncio.run(asyncio.sleep(10))
+        logger.info("Getting peer connection offer")
         peerConnectionOffer = self.driver.execute_script("return window.botOutputManager.getBotOutputPeerConnectionOffer();")
         logger.info(f"Peer connection offer: {peerConnectionOffer}")
         if peerConnectionOffer.get("error"):
