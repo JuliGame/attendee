@@ -3,6 +3,7 @@ services:
     build: ./
     volumes:
      - .:/attendee
+     - ./audio_recordings:/audio_recordings
     networks:
       - attendee_network
     environment:
@@ -46,6 +47,7 @@ services:
     build: ./
     volumes:
      - .:/attendee
+     - ./audio_recordings:/audio_recordings
     networks:
       - attendee_network
     ports:

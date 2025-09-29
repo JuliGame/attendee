@@ -90,6 +90,23 @@ if pactl list short sinks | awk '{print $2}' | grep -qx "auto_null"; then
   pactl set-default-source auto_null.monitor || true
 fi
 
+# Set up audio recording directory and start recording
+RECORDING_DIR="/audio_recordings"
+mkdir -p "$RECORDING_DIR"
+
+# Create a unique filename with timestamp
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+AUDIO_FILE="$RECORDING_DIR/meeting_audio_${TIMESTAMP}.wav"
+
+echo "[entrypoint] Starting audio recording to: $AUDIO_FILE"
+
+# Start audio recording in background using parecord (PulseAudio record)
+# This records from the default source (monitor) at 48kHz stereo
+nohup parecord --format=s16le --rate=48000 --channels=2 "$AUDIO_FILE" 2>/dev/null &
+RECORDING_PID=$!
+
+echo "[entrypoint] Audio recording started with PID: $RECORDING_PID"
+
 if [[ "${PA_DEBUG:-0}" = "1" ]]; then
   echo "==== FINAL ===="
   echo "Default Sink:   $(pactl info | sed -n 's/^Default Sink: //p')"
@@ -100,4 +117,19 @@ if [[ "${PA_DEBUG:-0}" = "1" ]]; then
 fi
 
 echo "[entrypoint] PulseAudio ready. Exec: $*"
+
+# Function to cleanup recording on exit
+cleanup() {
+    echo "[entrypoint] Stopping audio recording..."
+    if [[ -n "$RECORDING_PID" ]] && kill -0 "$RECORDING_PID" 2>/dev/null; then
+        kill "$RECORDING_PID" 2>/dev/null || true
+        wait "$RECORDING_PID" 2>/dev/null || true
+        echo "[entrypoint] Audio recording stopped"
+    fi
+    exit 0
+}
+
+# Set trap to cleanup on exit
+trap cleanup EXIT INT TERM
+
 exec "$@"
